@@ -154,6 +154,7 @@ void MangaReaderActivity::onEnter() {
   // Smart sync moves to another device's position without asking, before the saved one is read.
   if (KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART) writeSyncedPosition();
   loadProgress();
+  loadJumpOrigin();
   loadCachedBookmarks();
   updateBookmarkFlag();
 
@@ -234,6 +235,7 @@ void MangaReaderActivity::onExit() {
 
   dropLookupPrescan();
   saveProgress();
+  saveJumpOrigin();
   if (book) remoteProgress::readHere(book->getFolder(), enterPercent, mangaProgressPercent(book->getFolder()));
   flushReaderSession();
   endOfBookOptionsReady.store(false, std::memory_order_release);
@@ -483,12 +485,17 @@ void MangaReaderActivity::clearEndOfBookOptionsIfNeeded() {
 
 void MangaReaderActivity::jumpToPercent(const int percent) {
   if (!book || book->getPageCount() == 0) return;
-  currentPage =
-      std::min<uint32_t>(static_cast<uint32_t>(percent) * book->getPageCount() / 100, book->getPageCount() - 1);
+  jumpToPage(std::min<uint32_t>(static_cast<uint32_t>(percent) * book->getPageCount() / 100, book->getPageCount() - 1));
+  requestUpdate();
+}
+
+void MangaReaderActivity::jumpToPage(const uint32_t page) {
+  if (!book || page >= book->getPageCount()) return;
+  jumpOriginPage = currentPage;
+  currentPage = page;
   currentPanel = -1;
   viewMode = ViewMode::FullPage;
   loadCurrentPagePanels();
-  requestUpdate();
 }
 
 void MangaReaderActivity::onReturnFromEndOfBook() {
@@ -1897,6 +1904,40 @@ void MangaReaderActivity::launchWordLookupAt(std::string combined, const int gly
   });
 }
 
+namespace {
+constexpr uint8_t JUMP_FILE_VERSION = 1;
+constexpr size_t JUMP_FILE_SIZE = 5;  // [version] [page u32 LE]
+}  // namespace
+
+void MangaReaderActivity::saveJumpOrigin() const {
+  if (!book || !jumpOriginPage) return;
+  const uint32_t page = *jumpOriginPage;
+  const uint8_t data[JUMP_FILE_SIZE] = {
+      JUMP_FILE_VERSION, static_cast<uint8_t>(page & 0xFF), static_cast<uint8_t>((page >> 8) & 0xFF),
+      static_cast<uint8_t>((page >> 16) & 0xFF), static_cast<uint8_t>((page >> 24) & 0xFF)};
+  HalFile f;
+  if (!Storage.openFileForWrite("MNG", book->getCachePath() + "/jump.bin", f)) return;
+  if (f.write(data, sizeof(data)) != sizeof(data)) LOG_ERR("MNG", "Failed to write jump origin");
+}
+
+void MangaReaderActivity::loadJumpOrigin() {
+  if (!book) return;
+  const std::string path = book->getCachePath() + "/jump.bin";
+  if (!Storage.exists(path.c_str())) return;
+  {
+    HalFile f;
+    uint8_t data[JUMP_FILE_SIZE];
+    if (Storage.openFileForRead("MNG", path, f) && f.read(data, sizeof(data)) == static_cast<int>(sizeof(data)) &&
+        data[0] == JUMP_FILE_VERSION) {
+      const uint32_t page = static_cast<uint32_t>(data[1]) | (static_cast<uint32_t>(data[2]) << 8) |
+                            (static_cast<uint32_t>(data[3]) << 16) | (static_cast<uint32_t>(data[4]) << 24);
+      if (page < book->getPageCount()) jumpOriginPage = page;
+    }
+  }
+  // Consumed once: a later exit rewrites it, and an unclean shutdown must not resurrect a stale one.
+  Storage.remove(path.c_str());
+}
+
 void MangaReaderActivity::saveProgress() const {
   if (!book) return;
   std::string cachePath = book->getCachePath();
@@ -2037,20 +2078,23 @@ void MangaReaderActivity::launchMenu() {
     }
   }
 
+  char jumpBackTarget[24];
+  if (jumpOriginPage) snprintf(jumpBackTarget, sizeof(jumpBackTarget), tr(STR_PAGE_NUMBER_FORMAT), *jumpOriginPage + 1);
+
   // hasFootnotes=false (no footnotes in manga); mangaMode=true hides Look Up (Word Lookup
   // covers OCR'd text) and routes READER_SETTINGS below to a filtered Settings screen -- see
   // its case and SettingsActivity's mangaMode.
   startActivityForResult(
-      std::make_unique<EpubReaderMenuActivity>(renderer, mappedInput, book->getTitle(), curPage, totalPages,
-                                               bookProgressPercent, SETTINGS.orientation,
-                                               /*hasFootnotes=*/false, /*hasBookmarks=*/!cachedBookmarks.empty(),
-                                               /*hasWordLookup=*/hasWordLookup, /*verticalEnabled=*/false,
-                                               /*furiganaEnabled=*/true, /*hasPageText=*/hasPageText,
-                                               /*imageReaderMinimal=*/false, /*mangaMode=*/true,
-                                               /*hideGenericLookup=*/false,
-                                               /*showPanelsOnlyToggle=*/bookHasPanelCropCapability,
-                                               /*panelsOnlyEnabled=*/panelsOnlyMode,
-                                               /*scrubOnEnter=*/true),
+      std::make_unique<EpubReaderMenuActivity>(
+          renderer, mappedInput, book->getTitle(), curPage, totalPages, bookProgressPercent, SETTINGS.orientation,
+          /*hasFootnotes=*/false, /*hasBookmarks=*/!cachedBookmarks.empty(),
+          /*hasWordLookup=*/hasWordLookup, /*verticalEnabled=*/false,
+          /*furiganaEnabled=*/true, /*hasPageText=*/hasPageText,
+          /*imageReaderMinimal=*/false, /*mangaMode=*/true,
+          /*hideGenericLookup=*/false,
+          /*showPanelsOnlyToggle=*/bookHasPanelCropCapability,
+          /*panelsOnlyEnabled=*/panelsOnlyMode,
+          /*scrubOnEnter=*/true, /*hasClippings=*/false, jumpOriginPage ? jumpBackTarget : nullptr),
       [this](const ActivityResult& result) {
         const auto& menu = std::get<MenuResult>(result.data);
         // Apply orientation change
@@ -2086,10 +2130,7 @@ void MangaReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
                                uint32_t targetPage = static_cast<uint32_t>(static_cast<float>(percent) / 100.0f *
                                                                            static_cast<float>(totalPages));
                                if (targetPage >= totalPages && totalPages > 0) targetPage = totalPages - 1;
-                               currentPage = targetPage;
-                               currentPanel = -1;
-                               viewMode = ViewMode::FullPage;
-                               loadCurrentPagePanels();
+                               jumpToPage(targetPage);
                                requestUpdate();
                              }
                            });
@@ -2129,15 +2170,7 @@ void MangaReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
         startActivityForResult(
             std::make_unique<MangaChapterSelectionActivity>(renderer, mappedInput, book->getToc(), currentPage),
             [this](const ActivityResult& result) {
-              if (!result.isCancelled && book) {
-                const uint32_t targetPage = std::get<PageResult>(result.data).page;
-                if (targetPage < book->getPageCount()) {
-                  currentPage = targetPage;
-                  currentPanel = -1;
-                  viewMode = ViewMode::FullPage;
-                  loadCurrentPagePanels();
-                }
-              }
+              if (!result.isCancelled) jumpToPage(std::get<PageResult>(result.data).page);
               requestUpdate();
             });
         return;
@@ -2191,19 +2224,14 @@ void MangaReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
       startActivityForResult(
           std::make_unique<MangaBookmarksActivity>(renderer, mappedInput, book->getFolder(), book->getToc()),
           [this](const ActivityResult& result) {
-            if (!result.isCancelled && book) {
-              const uint32_t targetPage = std::get<PageResult>(result.data).page;
-              if (targetPage < book->getPageCount()) {
-                currentPage = targetPage;
-                currentPanel = -1;
-                viewMode = ViewMode::FullPage;
-                loadCurrentPagePanels();
-              }
-            }
+            if (!result.isCancelled) jumpToPage(std::get<PageResult>(result.data).page);
             requestUpdate();
           });
       return;
     }
+    case EpubReaderMenuActivity::MenuAction::JUMP_BACK:
+      if (jumpOriginPage) jumpToPage(*jumpOriginPage);  // records this page as the new origin
+      break;
     case EpubReaderMenuActivity::MenuAction::TOGGLE_BOOKMARK: {
       addBookmark();
       showBookmarkMessage = true;

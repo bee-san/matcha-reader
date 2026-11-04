@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,13 @@ class MangaReaderActivity final : public Activity {
   int enterPercent = -1;  // the book's saved progress when it was opened
   bool syncedPositionOffered = false;
   void jumpToPercent(int percent);
+  // Page the last explicit jump (chapter, percent, bookmark) started from. Jump Back returns
+  // there and records the page it leaves, so a second Jump Back undoes it.
+  std::optional<uint32_t> jumpOriginPage;
+  void jumpToPage(uint32_t page);
+  // Kept in jump.bin across sleep and reopening, consumed on load.
+  void saveJumpOrigin() const;
+  void loadJumpOrigin();
   // Writes the position an Insights sync fetched from another device as this book's saved page and drops
   // it (syncedPosition). False when there is none.
   bool writeSyncedPosition();

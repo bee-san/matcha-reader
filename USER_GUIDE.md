@@ -1046,7 +1046,7 @@ The Power button can turn pages too. Set **Short Power Button Click** (also in S
 
 To jump a whole chapter with a long press, open **Settings → Controls → Shortcuts** and set **Long-Press Button Behavior** to **Chapter Skip**. It is off by default.
 
-With it on, hold **Right** (or **Side Down**) for about a second to go to the next chapter. Hold **Left** (or **Side Up**) to go back to the start of the chapter, and hold again to reach the previous one.
+With it on, hold **Right** (or **Side Down**) for about a second to go to the next chapter. Hold **Left** (or **Side Up**) to go back to the start of the chapter, and hold again to reach the previous one. If you skip by mistake, **Jump Back** in the reader menu returns you.
 
 You can also pick any chapter from the **[Reader Menu](#5-reader-menu)**.
 
@@ -1127,6 +1127,7 @@ The menu shows these entries, top to bottom. Some only appear when they apply to
 
 | Entry | What it does |
 | ----- | ------------ |
+| **Jump Back** | Shown after you jump: to a chapter, a percentage, a bookmark, a clipping, or with Chapter Skip. Returns to the place you left; the value shows where (a percentage in books, a page in manga). Choose it again to undo. Kept through sleep and when you reopen the book. |
 | **Select Chapter** | Opens the table of contents (see [5.1](#51-chapter-selection)). |
 | **Links and footnotes** | Opens the footnote panel. Shown when the chapter has footnotes. |
 | **Word Lookup** | Looks up words in Japanese and Chinese books (see [§6](#6-language-learning-features)). |
@@ -1637,7 +1638,6 @@ cover and progress. Both forms keep working side by side.
 
 Reaching the last page marks the manga as finished in your reading insights, the same as an EPUB.
 
-#### Converting mokuro manga
 #### Reading the text with Screen AI
 
 Screen AI is the OCR Chrome ships for accessibility. It runs on your computer, reads vertical
@@ -1658,6 +1658,7 @@ running while it converts. The helper listens on your computer only.
 Screen AI reports lines; the converter joins the columns of each speech bubble into one block (a saved
 sentence is a block's text) and drops furigana, page numbers and stray marks.
 
+#### Converting mokuro manga
 
 [mokuro](https://github.com/kha-white/mokuro) 0.2 and later writes a `<volume>.mokuro` file next to each volume's
 folder of pages. That file already holds every speech bubble's text and where each line sits, so `convert_manga.py`
@@ -1688,11 +1689,11 @@ python3 tools/manga_convert/convert_mokuro_library.py --library ~/Documents/moku
   --output-dir /path/to/sd/manga --series "Yotsuba" --series "Aho Girl" -- --yonkoma
 ```
 
-Both scripts take `--device` to size the pages for your screen (`x3`, `x4`, `x4pro`, `papermono`, `eego` and so on);
 mokuro's reader (manga-ocr) confuses small kana (ぼ for ぽ, あ for ぁ), and volumes made with older
 mokuro versions carry no line positions, which leaves word lookup on whole bubbles. Add `--screenai`
 (see above) to read the pages again instead.
 
+Both scripts take `--device` to size the pages for your screen (`x3`, `x4`, `x4pro`, `papermono`, `eego` and so on);
 the library script defaults to `x4pro`. Each volume becomes `<series>/<volume>.matcha`. The title, the author (from a leading `[Author]` in the volume name),
 the series and the volume number come from the mokuro file, and the language is set to Japanese. Volumes already
 converted are skipped (`--force` converts them again), so a stopped run picks up where it left off, and a volume
