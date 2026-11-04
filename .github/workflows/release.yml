@@ -38,9 +38,7 @@ jobs:
             exit 0
           fi
           assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          for asset in x4c-firmware.bin sticky-firmware.bin \
-                       x4pro-firmware.bin papermono-firmware.bin metalio_eink4-firmware.bin \
-                       eego_a4-firmware.bin picco-firmware.bin; do
+          for asset in x4pro-firmware.bin; do
             if ! grep -qxF "$asset" <<<"$assets"; then
               echo "firmware=false" >> "$GITHUB_OUTPUT"
               exit 0
@@ -63,30 +61,11 @@ jobs:
       matrix:
         include:
           # Asset names are the contract OtaUpdater reads: <board>-firmware.bin. This fork
-          # builds no C3 (X3/X4) image. Renaming one here without the matching change in
-          # OtaUpdater.cpp silently breaks over-the-air updates.
-          - pio_env: x4c-gh_release
-            debug_env: x4c
-            asset: x4c-firmware.bin
-          - pio_env: sticky-gh_release
-            debug_env: sticky
-            asset: sticky-firmware.bin
+          # builds the X4 Pro only. Renaming it without the matching change in OtaUpdater.cpp
+          # silently breaks over-the-air updates.
           - pio_env: x4pro-gh_release
             debug_env: x4pro
             asset: x4pro-firmware.bin
-          - pio_env: papermono-gh_release
-            debug_env: papermono
-            asset: papermono-firmware.bin
-          - pio_env: metalio_eink4-gh_release
-            debug_env: metalio_eink4
-            asset: metalio_eink4-firmware.bin
-          - pio_env: eego_a4-gh_release
-            debug_env: eego_a4
-            asset: eego_a4-firmware.bin
-          # Picco has no second app slot and no OTA; this one is flashed over USB.
-          - pio_env: picco-gh_release
-            debug_env: picco
-            asset: picco-firmware.bin
     steps:
       - uses: actions/checkout@v6
         with:
@@ -215,11 +194,9 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          # Exactly the names OtaUpdater asks for, plus Picco's USB image; a missing one means some
-          # device would see no update, so fail loudly rather than publish a half-updatable release.
-          for asset in x4c-firmware.bin sticky-firmware.bin \
-                       x4pro-firmware.bin papermono-firmware.bin metalio_eink4-firmware.bin \
-                       eego_a4-firmware.bin picco-firmware.bin; do
+          # Exactly the name OtaUpdater asks for; a missing one means the device would see no update,
+          # so fail loudly rather than publish a release it cannot install.
+          for asset in x4pro-firmware.bin; do
             path="$(find dist -type f -name "$asset" | head -1)"
             if [ -z "$path" ]; then
               echo "No $asset among the built artifacts" >&2
@@ -355,14 +332,7 @@ jobs:
             printf '%s\n\n' "$start"
             printf '**Please ensure that you flash the right firmware on your device.**\n\n'
             table 'Device' <<'TABLE'
-          X3, and X4 (old)|x4old-x3-firmware.bin
-          X4C (new)|x4c-firmware.bin
           X4 Pro|x4pro-firmware.bin
-          Sticky|sticky-firmware.bin
-          Papermono|papermono-firmware.bin
-          Metalio 3.97"|metalio_eink4-firmware.bin
-          EEGO A4|eego_a4-firmware.bin
-          BOOX Picco (USB only, no Wi-Fi updates)|picco-firmware.bin
           TABLE
             printf '**Extras for the SD card**\n\nThey live in [%s](https://github.com/%s). Each release there explains where the files go on the card.\n\n' \
               "${ASSETS_REPO#*/}" "$ASSETS_REPO"

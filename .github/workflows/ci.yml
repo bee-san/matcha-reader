@@ -111,21 +111,10 @@ jobs:
         # pr-firmware-links.yml looks them up by exactly these names. They are deliberately
         # NOT the release asset names: release.yml publishes <board>-firmware.bin (and
         # x4old-x3-firmware.bin), which is the contract OtaUpdater reads.
+        # This fork builds the X4 Pro only.
         include:
-          - env: sticky
-            asset: firmware-sticky.bin
           - env: x4pro
             asset: firmware-x4pro.bin
-          - env: x4c
-            asset: firmware-x4c.bin
-          - env: papermono
-            asset: firmware-papermono.bin
-          - env: metalio_eink4
-            asset: firmware-metalio_eink4.bin
-          - env: eego_a4
-            asset: firmware-eego_a4.bin
-          - env: picco
-            asset: firmware-picco.bin
     steps:
       - uses: actions/checkout@v6
         with:
