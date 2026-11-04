@@ -38,7 +38,7 @@ jobs:
             exit 0
           fi
           assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          for asset in x4old-x3-firmware.bin x4c-firmware.bin sticky-firmware.bin \
+          for asset in x4c-firmware.bin sticky-firmware.bin \
                        x4pro-firmware.bin papermono-firmware.bin metalio_eink4-firmware.bin \
                        eego_a4-firmware.bin picco-firmware.bin; do
             if ! grep -qxF "$asset" <<<"$assets"; then
@@ -62,12 +62,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Asset names are the contract OtaUpdater reads: <board>-firmware.bin, with
-          # the combined X3/X4 C3 image published as x4old-x3. Renaming one here without
-          # the matching change in OtaUpdater.cpp silently breaks over-the-air updates.
-          - pio_env: gh_release
-            debug_env: default
-            asset: x4old-x3-firmware.bin
+          # Asset names are the contract OtaUpdater reads: <board>-firmware.bin. This fork
+          # builds no C3 (X3/X4) image. Renaming one here without the matching change in
+          # OtaUpdater.cpp silently breaks over-the-air updates.
           - pio_env: x4c-gh_release
             debug_env: x4c
             asset: x4c-firmware.bin
@@ -220,7 +217,7 @@ jobs:
           set -euo pipefail
           # Exactly the names OtaUpdater asks for, plus Picco's USB image; a missing one means some
           # device would see no update, so fail loudly rather than publish a half-updatable release.
-          for asset in x4old-x3-firmware.bin x4c-firmware.bin sticky-firmware.bin \
+          for asset in x4c-firmware.bin sticky-firmware.bin \
                        x4pro-firmware.bin papermono-firmware.bin metalio_eink4-firmware.bin \
                        eego_a4-firmware.bin picco-firmware.bin; do
             path="$(find dist -type f -name "$asset" | head -1)"

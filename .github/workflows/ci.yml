@@ -2,7 +2,7 @@ name: CI (build)
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
   pull_request:
   # Manual runs: build any branch on demand (e.g. to grab the firmware.bin
   # artifact for SD-card flashing without a local toolchain).
@@ -98,7 +98,8 @@ jobs:
           fi
 
       - name: Run cppcheck
-        run: pio check --fail-on-defect low --fail-on-defect medium --fail-on-defect high
+        # This fork targets the X4 Pro only; the platformio.ini default env is the C3 X3/X4.
+        run: pio check -e x4pro --fail-on-defect low --fail-on-defect medium --fail-on-defect high
 
   build:
     name: Build ${{ matrix.env }}
@@ -111,8 +112,6 @@ jobs:
         # NOT the release asset names: release.yml publishes <board>-firmware.bin (and
         # x4old-x3-firmware.bin), which is the contract OtaUpdater reads.
         include:
-          - env: default
-            asset: firmware.bin
           - env: sticky
             asset: firmware-sticky.bin
           - env: x4pro
