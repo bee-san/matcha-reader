@@ -99,6 +99,8 @@ Read panel by panel, each scaled to the screen, and look up words in the speech 
 
 Manga already processed by [mokuro](https://github.com/kha-white/mokuro) converts without Gemini, one volume at a time in [bee-san's Matcha Reader Tools](https://bee-san.github.io/matcha-reader-tools/manga.html) (choose the series zip, pick a volume), or with `tools/manga_convert/convert_manga.py`, which takes a `<volume>.mokuro` file and uses mokuro's own text and line boxes, so looking up single words in the bubbles works straight away. `tools/manga_convert/convert_mokuro_library.py` converts a whole folder of mokuro series at once. See [Guide §6.6](USER_GUIDE.md#converting-mokuro-manga).
 
+Text can also be read with Screen AI, the OCR Chrome ships for accessibility: on your computer, no API key, small kana read correctly and every line placed for word lookup. `--screenai` on the converter, or **Screen AI on this computer** in the browser tool with `tools/manga_convert/screenai.py --serve` running. See [Guide §6.6](USER_GUIDE.md#reading-the-text-with-screen-ai).
+
 <p align="center">
   <img src="docs/images/screenshots/manga-full-page.png" width="200" alt="Full page view">
   <img src="docs/images/screenshots/manga-panel-zoom.png" width="200" alt="Panel zoom view">

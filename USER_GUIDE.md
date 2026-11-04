@@ -1638,6 +1638,26 @@ cover and progress. Both forms keep working side by side.
 Reaching the last page marks the manga as finished in your reading insights, the same as an EPUB.
 
 #### Converting mokuro manga
+#### Reading the text with Screen AI
+
+Screen AI is the OCR Chrome ships for accessibility. It runs on your computer, reads vertical
+Japanese, small kana included, and gives every printed line its position, so word lookup lands on the
+right word. It needs no API key, sends nothing anywhere, and makes no translations.
+
+```bash
+python3 tools/manga_convert/screenai.py --setup          # once: downloads Chromium's screen-ai package
+python3 tools/manga_convert/convert_manga.py --input book.cbz --output-dir "/path/to/sd/manga/Book" \
+  --device x4pro --language ja --screenai
+```
+
+`--screenai` replaces Gemini, or a mokuro volume's own text. In
+[the browser converter](https://bee-san.github.io/matcha-reader-tools/manga.html), choose
+**Screen AI on this computer** in step 4 and keep `python3 tools/manga_convert/screenai.py --serve`
+running while it converts. The helper listens on your computer only.
+
+Screen AI reports lines; the converter joins the columns of each speech bubble into one block (a saved
+sentence is a block's text) and drops furigana, page numbers and stray marks.
+
 
 [mokuro](https://github.com/kha-white/mokuro) 0.2 and later writes a `<volume>.mokuro` file next to each volume's
 folder of pages. That file already holds every speech bubble's text and where each line sits, so `convert_manga.py`
@@ -1669,6 +1689,10 @@ python3 tools/manga_convert/convert_mokuro_library.py --library ~/Documents/moku
 ```
 
 Both scripts take `--device` to size the pages for your screen (`x3`, `x4`, `x4pro`, `papermono`, `eego` and so on);
+mokuro's reader (manga-ocr) confuses small kana (ぼ for ぽ, あ for ぁ), and volumes made with older
+mokuro versions carry no line positions, which leaves word lookup on whole bubbles. Add `--screenai`
+(see above) to read the pages again instead.
+
 the library script defaults to `x4pro`. Each volume becomes `<series>/<volume>.matcha`. The title, the author (from a leading `[Author]` in the volume name),
 the series and the volume number come from the mokuro file, and the language is set to Japanese. Volumes already
 converted are skipped (`--force` converts them again), so a stopped run picks up where it left off, and a volume

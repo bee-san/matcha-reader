@@ -1765,6 +1765,9 @@ def collect_mokuro_pages(path: str, data: dict) -> tuple[list[str], list[dict]]:
     index-aligned for the conversion loop.
     """
     image_dir = os.path.splitext(path)[0]
+    # Some mokuro setups name the file "<volume>.mo.mokuro" beside a "<volume>/" folder.
+    if not os.path.isdir(image_dir) and image_dir.endswith(".mo") and os.path.isdir(image_dir[:-3]):
+        image_dir = image_dir[:-3]
     images, records, missing = [], [], []
     for record in data["pages"]:
         rel = _safe_archive_path(str(record.get("img_path", ""))) if isinstance(record, dict) else None
@@ -1914,6 +1917,30 @@ def assign_text_to_panels(blocks: list[dict], frames: list[list[int]], boxes: li
             by_box = {id(b["box"]): b for b in group}
             owned[i] = [by_box[id(box)] for box in sort_panels_reading_order([b["box"] for b in group], rtl=rtl)]
     return owned
+
+
+def screenai_page_blocks(engine, source_img, page_size: tuple[int, int]) -> list[dict]:
+    """Screen AI's speech bubbles for one page, scaled from the full-resolution source (after any margin
+    trim) to the page as written."""
+    import screenai
+    sx, sy = page_size[0] / source_img.width, page_size[1] / source_img.height
+    pw, ph = page_size
+
+    def scale(b):
+        box = [max(0, min(pw, round(b[0] * sx))), max(0, min(ph, round(b[1] * sy))),
+               max(0, min(pw, round(b[2] * sx))), max(0, min(ph, round(b[3] * sy)))]
+        return box if box[2] > box[0] and box[3] > box[1] else None
+
+    blocks = []
+    for bubble in screenai.bubbles(engine.read(source_img)):
+        box = scale(bubble["box"])
+        if box is None:
+            continue
+        lines = [scale(l) for l in bubble["lines"]]
+        blocks.append({"box": box, "text": bubble["text"], "vertical": bubble["vertical"],
+                       # A line lost to rounding would shift the rest onto the wrong text segment.
+                       "lines": lines if all(lines) else []})
+    return blocks
 
 
 # ── Main pipeline ─────────────────────────────────────────────────
@@ -2097,6 +2124,15 @@ def main():
              "2.0.0-rc-4 or later; use this for older firmware.",
     )
     parser.add_argument(
+        "--screenai",
+        action="store_true",
+        help="Read the text with Chrome's on-device OCR (Screen AI) instead of Gemini, or instead of a mokuro "
+             "volume's own text. No API key and nothing leaves the computer; no translations. Download the "
+             "library once with `python3 screenai.py --setup`.",
+    )
+    parser.add_argument("--screenai-dir", type=Path, help="Where Screen AI was downloaded (default "
+                                                          "~/.config/screen_ai/resources)")
+    parser.add_argument(
         "--mono",
         action="store_true",
         help="Write pages and panel crops as 1-bit (black/white) Floyd-Steinberg-dithered BMP instead of JPEG. "
@@ -2132,12 +2168,20 @@ def main():
                      else DEVICE_SCREENS[args.device] if args.device else None)
 
     mokuro_path = args.input if is_mokuro(args.input) else None
+    screenai_engine = None
+    if args.screenai:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import screenai
+        try:
+            screenai_engine = screenai.ScreenAI(args.screenai_dir or screenai.DEFAULT_DIR)
+        except (OSError, RuntimeError) as e:
+            sys.exit(f"Error: {e}")
     if mokuro_path and (args.webtoon or args.page_order_file):
         sys.exit("Error: --webtoon and --page-order-file cannot be used with a .mokuro input: its text is tied to "
                  "the volume's own pages in their own order.")
 
     api_key = None
-    if not args.no_ocr and not mokuro_path:
+    if not args.no_ocr and not mokuro_path and not screenai_engine:
         if args.gemini_key_file:
             with open(args.gemini_key_file, "r", encoding="utf-8") as f:
                 api_key = f.read().strip()
@@ -2295,25 +2339,33 @@ def main():
                 else:
                     shutil.copy(src_path, os.path.join(args.output_dir, f"page_{page_idx:04d}{ext}"))
 
+            # Text read for the whole page up front -- by Screen AI, or mokuro's own -- in page pixels.
+            page_text = None
+            if screenai_engine:
+                # Read at full resolution: small kana are what lookup depends on.
+                page_text = screenai_page_blocks(screenai_engine, source_img, (img_w, img_h))
+            elif mokuro_pages:
+                page_text = mokuro_text_blocks(mokuro_pages[page_idx], source_size, crop_origin, crop_size,
+                                               (img_w, img_h))
+
             if args.webtoon:
                 # Already one top-to-bottom column, cut at its own gutters -- reordering a
                 # single column can only move boxes away from what the cut established.
                 boxes = detect_webtoon_panels(img)
+                frames = boxes
             else:
                 frames, text_boxes = detect_panels(img)
-                if mokuro_pages:
-                    # mokuro's blocks are exact where the detector's are guesses, and they cover
-                    # the bubbles a crop must not slice.
-                    page_text = mokuro_text_blocks(mokuro_pages[page_idx], source_size, crop_origin, crop_size,
-                                                   (img_w, img_h))
+                if page_text:
+                    # Whole-page text is exact where the detector's text boxes are guesses, and it
+                    # covers the bubbles a crop must not slice.
                     text_boxes = text_boxes + [b["box"] for b in page_text]
                 # Order on the frames as drawn, then grow the crops over the
                 # bubbles -- expand_panels_over_text() is index-preserving, so
                 # the reading order established here survives the expansion.
                 frames = sort_panels_reading_order(frames, rtl=not args.ltr, column_major=args.yonkoma)
                 boxes = expand_panels_over_text(frames, text_boxes, img_w, img_h)
-            mokuro_by_panel = (assign_text_to_panels(page_text, frames, boxes, rtl=not args.ltr)
-                               if mokuro_pages else None)
+            mokuro_by_panel = (assign_text_to_panels(page_text, frames, boxes, rtl=not (args.ltr or args.webtoon))
+                               if page_text is not None else None)
 
             # Crop and save every panel first (fast, local) before dispatching
             # the slow network calls concurrently -- OCR is I/O-bound (network
