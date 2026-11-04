@@ -24,6 +24,7 @@
 #include "activities/settings/SettingInfo.h"
 #include "components/UITheme.h"
 #include "util/DictionaryRegistry.h"
+#include "util/NightLight.h"
 #include "util/SlideSwitch.h"
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
@@ -342,9 +343,10 @@ inline StrId lowerSideButtonLabel() {
 
 // The settings table itself, built once. Exposed separately from getSettingsList() so the
 // persistence path can walk it WITHOUT materializing a copy -- see forEachPersistableSetting().
-// Upper bound on the table's rows (rows under a disabled capability are not built), so the
-// vector is allocated once.
-constexpr size_t SETTINGS_TABLE_ROWS = 90;
+// The table's rows on this build (rows under a disabled capability are not built), so the vector
+// is allocated once and exactly. Update with the #if blocks in settingsBaseList().
+constexpr size_t SETTINGS_TABLE_ROWS = 90 + FREEINK_CAP_WARMLIGHT + 2 * FREEINK_CAP_HAPTIC + FREEINK_DEVICE_PICCO +
+                                       (FREEINK_CAP_FRONTLIGHT ? 5 + FREEINK_CAP_WARMLIGHT : 0);
 
 inline const std::vector<SettingInfo>& settingsBaseList() {
   static const std::vector<SettingInfo> baseList = [] {
@@ -408,6 +410,29 @@ inline const std::vector<SettingInfo>& settingsBaseList() {
           SettingInfo::Toggle(StrId::STR_SUNLIGHT_FADING_FIX, &CrossPointSettings::fadingFix, "fadingFix",
                               StrId::STR_CAT_DISPLAY),
 #if FREEINK_CAP_FRONTLIGHT
+          // --- Light Schedule (a sub-screen of Display; see util/NightLight.h) ---
+          // Times and city are indices the web page would show as bare numbers, so they stay
+          // device-only; SettingsActivity opens a picker for them.
+          SettingInfo::Enum(
+              StrId::STR_SCHEDULE, &CrossPointSettings::nightLightMode,
+              {StrId::STR_STATE_OFF, StrId::STR_SCHEDULE_CUSTOM_TIMES, StrId::STR_SCHEDULE_SUNSET_SUNRISE},
+              "nightLightMode", StrId::STR_CAT_LIGHT_SCHEDULE),
+          SettingInfo::Value(StrId::STR_LIGHT_ON_AT, &CrossPointSettings::nightLightStart,
+                             {0, nightlight::HALF_HOURS_PER_DAY - 1, 1}, "nightLightStart",
+                             StrId::STR_CAT_LIGHT_SCHEDULE)
+              .withWebHidden(),
+          SettingInfo::Value(StrId::STR_LIGHT_OFF_AT, &CrossPointSettings::nightLightEnd,
+                             {0, nightlight::HALF_HOURS_PER_DAY - 1, 1}, "nightLightEnd", StrId::STR_CAT_LIGHT_SCHEDULE)
+              .withWebHidden(),
+          SettingInfo::Value(StrId::STR_CITY, &CrossPointSettings::nightLightCity, {0, nightlight::CITY_COUNT - 1, 1},
+                             "nightLightCity", StrId::STR_CAT_LIGHT_SCHEDULE)
+              .withWebHidden(),
+          SettingInfo::Value(StrId::STR_NIGHT_BRIGHTNESS, &CrossPointSettings::nightLightBrightness, {1, 100, 1},
+                             "nightLightBrightness", StrId::STR_CAT_LIGHT_SCHEDULE),
+#if FREEINK_CAP_WARMLIGHT
+          SettingInfo::Value(StrId::STR_NIGHT_WARMTH, &CrossPointSettings::nightLightWarmth, {0, 100, 5},
+                             "nightLightWarmth", StrId::STR_CAT_LIGHT_SCHEDULE),
+#endif
 #endif
           // Night mode = inverted output polarity everywhere (ActivityManager
           // applies it to every activity), so it lives in the Display category.

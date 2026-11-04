@@ -28,6 +28,10 @@ class FrontlightPanelActivity final : public Activity, private UiAppHost {
   // touched-by-the-user flag: onExit() must not persist a mirror that never
   // reflected user intent in the first place.
   bool lightOnChanged = false;
+  // The user moved a slider this session. Only then are the levels saved: the light may be
+  // showing the night pair, and an unchanged pair must not overwrite a value set elsewhere
+  // (Light Schedule, web settings).
+  bool levelsChanged = false;
   bool draggingSlider = false;
   // The touch tile toggles SETTINGS.touchReaderControls between off and this
   // remembered mode, so a Swipe or Inverted Tap user gets their mode back

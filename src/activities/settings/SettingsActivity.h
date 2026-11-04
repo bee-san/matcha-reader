@@ -36,6 +36,9 @@ class SettingsActivity final : public UiListActivity {
   void rebuildRowItems();
   void toggleSelectedSetting();
   void openSleepTimeoutPicker();
+  // Light Schedule rows whose values want a list or slider rather than a step on Confirm.
+  bool openLightSchedulePicker(const SettingInfo& setting);
+  void lightScheduleChanged();
   void applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr);
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
   static std::string settingValueText(const SettingInfo& setting);

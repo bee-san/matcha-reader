@@ -148,6 +148,7 @@ A wallpaper over the page you were reading. The book shows through. See [Guide ย
 - Japanese and Chinese interface language support
 
 ## Setup
+- A light schedule (X4 Pro and other frontlit devices): the light comes on dim, and warm where the light supports it, at night, either at set times or from sunset to sunrise at your city, and goes off in the morning. See [Guide ยง1](USER_GUIDE.md#light-schedule)
 
 Files go onto the SD card with a card reader or over Wi-Fi from the device's **File Transfer** screen.
 

@@ -5,6 +5,7 @@
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalDisplay.h>
+#include <HalFrontlight.h>
 #include <LibraryBuilder.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -42,6 +43,7 @@
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "util/NightLight.h"
 #include "util/PluginEvents.h"
 
 namespace fui = freeink::ui;
@@ -70,6 +72,18 @@ bool showOnDevice(const SettingInfo& setting) {
       SETTINGS.touchReaderControls == CrossPointSettings::TOUCH_READER_OFF) {
     return false;
   }
+  // Light Schedule: each row only for the mode that uses it.
+  const uint8_t lightMode = SETTINGS.nightLightMode;
+  if (setting.valuePtr == &CrossPointSettings::nightLightStart ||
+      setting.valuePtr == &CrossPointSettings::nightLightEnd) {
+    return lightMode == CrossPointSettings::NIGHT_LIGHT_CUSTOM;
+  }
+  if (setting.valuePtr == &CrossPointSettings::nightLightCity) return lightMode == CrossPointSettings::NIGHT_LIGHT_SUN;
+  if (setting.valuePtr == &CrossPointSettings::nightLightBrightness)
+    return lightMode != CrossPointSettings::NIGHT_LIGHT_OFF;
+  if (setting.valuePtr == &CrossPointSettings::nightLightWarmth) {
+    return lightMode != CrossPointSettings::NIGHT_LIGHT_OFF && Frontlight.hasColorTemperature();
+  }
   // Only the language tabs have an Unknown one to hide.
   if (setting.valuePtr == &CrossPointSettings::hideUnknownLanguages && !SETTINGS.showLanguageStats) return false;
   // Both only feed the CrossPoint list view: the cover grid keeps its own index and lists every
@@ -95,10 +109,13 @@ SettingsSection sectionFor(const SettingInfo& setting) {
   if (setting.category == StrId::STR_CAT_SLEEP) return SettingsSection::Sleep;
   if (setting.category == StrId::STR_STATS) return SettingsSection::Insights;
   if (setting.category == StrId::STR_CAT_SHORTCUTS) return SettingsSection::Controls;
+  if (setting.category == StrId::STR_CAT_LIGHT_SCHEDULE) return SettingsSection::Display;
   return SettingsSection::End;
 }
 
-bool isSubScreenCategory(const StrId category) { return category == StrId::STR_CAT_SHORTCUTS; }
+bool isSubScreenCategory(const StrId category) {
+  return category == StrId::STR_CAT_SHORTCUTS || category == StrId::STR_CAT_LIGHT_SCHEDULE;
+}
 
 // Position of a row on the Dictionary Settings sub-screen, or -1 for a row it does not show.
 // These Reader rows move there from the Reader page but keep their Reader category, so Reader
@@ -185,6 +202,9 @@ void SettingsActivity::rebuildSettings() {
   addAction(SettingsSection::Reader, StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings);
   addAction(SettingsSection::Reader, StrId::STR_DICTIONARY_SETTINGS, SettingAction::DictionarySettings);
   addAction(SettingsSection::Controls, StrId::STR_CAT_SHORTCUTS, SettingAction::ShortcutsSettings);
+  if (Frontlight.present()) {
+    addAction(SettingsSection::Display, StrId::STR_CAT_LIGHT_SCHEDULE, SettingAction::LightSchedule);
+  }
   if (!BoardConfig::hasTouch()) {
     addAction(SettingsSection::Controls, StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons);
   }
@@ -286,6 +306,10 @@ void SettingsActivity::activateIndex(const int index) {
 }
 
 void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr) {
+  if (valuePtr == &CrossPointSettings::nightLightMode) {
+    if (nightlight::refresh()) SETTINGS.saveToFile();
+    return;
+  }
   // Theme changes take effect immediately, on this screen — reload the theme
   // and re-derive the app's tokens so the very next repaint is in the new look.
   if (valuePtr != &CrossPointSettings::uiTheme) {
@@ -316,6 +340,7 @@ void SettingsActivity::toggleSelectedSetting() {
     openSleepTimeoutPicker();
     return;
   }
+  if (openLightSchedulePicker(setting)) return;
 
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     // Toggle the boolean value using the member pointer
@@ -368,8 +393,10 @@ void SettingsActivity::toggleSelectedSetting() {
 
     switch (setting.action) {
       case SettingAction::ShortcutsSettings:
-      case SettingAction::DictionarySettings: {
+      case SettingAction::DictionarySettings:
+      case SettingAction::LightSchedule: {
         const StrId page = setting.action == SettingAction::ShortcutsSettings ? StrId::STR_CAT_SHORTCUTS
+                           : setting.action == SettingAction::LightSchedule   ? StrId::STR_CAT_LIGHT_SCHEDULE
                                                                               : StrId::STR_DICTIONARY_SETTINGS;
         auto activity = makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput, section, page);
         if (!activity) {
@@ -556,8 +583,65 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+bool SettingsActivity::openLightSchedulePicker(const SettingInfo& setting) {
+  const auto valuePtr = setting.valuePtr;
+  const bool timeRow =
+      valuePtr == &CrossPointSettings::nightLightStart || valuePtr == &CrossPointSettings::nightLightEnd;
+  if (timeRow || valuePtr == &CrossPointSettings::nightLightCity) {
+    // Labels live only while the popup is open: 48 times or CITY_COUNT short names.
+    const size_t count = timeRow ? nightlight::HALF_HOURS_PER_DAY : nightlight::CITY_COUNT;
+    std::vector<std::string> labels;
+    labels.reserve(count);
+    char time[12];
+    for (size_t i = 0; i < count; i++) {
+      if (timeRow) {
+        nightlight::formatHalfHour(static_cast<uint8_t>(i), time, sizeof(time));
+        labels.emplace_back(time);
+      } else {
+        labels.emplace_back(nightlight::city(static_cast<uint8_t>(i)).name);
+      }
+    }
+    optionPopup.show(setting.nameId, std::move(labels), SETTINGS.*valuePtr, [this, valuePtr](const int index) {
+      SETTINGS.*valuePtr = static_cast<uint8_t>(index);
+      lightScheduleChanged();
+    });
+    requestUpdate();
+    return true;
+  }
+  if (valuePtr == &CrossPointSettings::nightLightBrightness || valuePtr == &CrossPointSettings::nightLightWarmth) {
+    auto activity = makeUniqueNoThrow<IntervalSelectionActivity>(
+        renderer, mappedInput, "NightLightLevel", setting.nameId, SETTINGS.*valuePtr, setting.valueRange.min,
+        setting.valueRange.max, setting.valueRange.step, 10, StrId::STR_PERCENT_VALUE_FORMAT);
+    if (!activity) {
+      LOG_ERR("SET", "OOM: night light level picker");
+      return true;
+    }
+    startActivityForResult(std::move(activity), [this, valuePtr](const ActivityResult& result) {
+      if (!result.isCancelled) {
+        SETTINGS.*valuePtr = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
+        lightScheduleChanged();
+      }
+      requestUpdate();
+    });
+    return true;
+  }
+  return false;
+}
+
+void SettingsActivity::lightScheduleChanged() {
+  nightlight::refresh();
+  SETTINGS.saveToFile();
+  rebuildSettings();
+  requestUpdate();
+}
+
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
   if (setting.action == SettingAction::HomeButton) return tr(STR_CONFIGURE);
+  if (setting.action == SettingAction::LightSchedule) {
+    char summary[48];
+    nightlight::formatSummary(summary, sizeof(summary));
+    return summary;
+  }
   if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
     // Guard like the valueGetter branch below: a corrupt/migrated settings
     // byte must not index past the enum table.
@@ -587,7 +671,21 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
                static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
       return valueBuffer;
     }
-    return std::to_string(SETTINGS.*(setting.valuePtr));
+    const uint8_t value = SETTINGS.*(setting.valuePtr);
+    if (setting.valuePtr == &CrossPointSettings::nightLightStart ||
+        setting.valuePtr == &CrossPointSettings::nightLightEnd) {
+      char time[12];
+      nightlight::formatHalfHour(value, time, sizeof(time));
+      return time;
+    }
+    if (setting.valuePtr == &CrossPointSettings::nightLightCity) return nightlight::city(value).name;
+    if (setting.valuePtr == &CrossPointSettings::nightLightBrightness ||
+        setting.valuePtr == &CrossPointSettings::nightLightWarmth) {
+      char percent[8];
+      snprintf(percent, sizeof(percent), tr(STR_PERCENT_VALUE_FORMAT), static_cast<unsigned int>(value));
+      return percent;
+    }
+    return std::to_string(value);
   }
   return "";
 }

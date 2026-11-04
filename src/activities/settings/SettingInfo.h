@@ -35,6 +35,7 @@ enum class SettingAction {
   HomeButton,
   LibrarySettings,
   SleepSettings,
+  LightSchedule,
   ShortcutsSettings,
   DictionarySettings,
   About,

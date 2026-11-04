@@ -56,6 +56,7 @@
 #include "fontIds.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
+#include "util/NightLight.h"
 #include "util/PluginEvents.h"
 #include "util/ScreenshotUtil.h"
 #include "util/SlideSwitch.h"
@@ -825,15 +826,23 @@ void setup() {
                               : slideSwitchOwnsLight()
                                   ? gpio.isToggleSwitchOn()
                                   : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  Frontlight.begin(SETTINGS.frontlightBrightness, SETTINGS.frontlightWarmth, restoreLightOn);
+  // With Short Power Button Press = Sleep, a single click wakes on any
+  // device; otherwise the button must still be held (ghost-wake debounce).
+  // Picco: plugging in USB pulses the wake line; power on, as stock does.
+  const bool ghostWake = wakeupReason == HalGPIO::WakeupReason::PowerButton && !wakeHoldVerified &&
+                         SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+                         !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected());
+  uint8_t lightBrightness = SETTINGS.frontlightBrightness;
+  uint8_t lightWarmth = SETTINGS.frontlightWarmth;
+  bool lightOn = restoreLightOn;
+  // The night light schedule may have opened or closed its window while the device slept. A
+  // ghost wake goes straight back to sleep and must not use that up.
+  if (!ghostWake) nightlight::adjustBootState(lightBrightness, lightWarmth, lightOn);
+  Frontlight.begin(lightBrightness, lightWarmth, lightOn);
 
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
-      // With Short Power Button Press = Sleep, a single click wakes on any
-      // device; otherwise the button must still be held (ghost-wake debounce).
-      // Picco: plugging in USB pulses the wake line; power on, as stock does.
-      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
-          !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected())) {
+      if (ghostWake) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
         powerManager.startDeepSleep(gpio);
@@ -1148,8 +1157,9 @@ void loop() {
     return;
   }
 
-  // After the exclusive-storage return: it saves settings to the SD card.
+  // After the exclusive-storage return: both save settings to the SD card.
   handleSlideSwitch();
+  if (nightlight::tick()) activityManager.requestUpdate();
   halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.orientation, activityManager.isReaderActivity());
 
   // Under the render lock, so a step never overlaps the themes' gauge reads.
