@@ -1637,6 +1637,48 @@ cover and progress. Both forms keep working side by side.
 
 Reaching the last page marks the manga as finished in your reading insights, the same as an EPUB.
 
+#### Converting mokuro manga
+
+[mokuro](https://github.com/kha-white/mokuro) 0.2 and later writes a `<volume>.mokuro` file next to each volume's
+folder of pages. That file already holds every speech bubble's text and where each line sits, so `convert_manga.py`
+uses it instead of Gemini: no API key and no Gemini calls, and selecting single words works from the first
+conversion. Panels are still found by the converter, because mokuro has none.
+
+In the browser, with nothing to install: open
+[bee-san's Matcha Reader Tools](https://bee-san.github.io/matcha-reader-tools/manga.html), choose the
+series `.zip` (or a folder), pick the volume in the list that appears, and convert. Multi-gigabyte
+series archives work: only the chosen volume is read.
+
+One volume on the command line:
+
+```bash
+python3 tools/manga_convert/convert_manga.py \
+  --input "Yotsuba to!/Yotsuba to! 01.mokuro" \
+  --output-dir "/path/to/sd/manga/Yotsuba to!/Yotsuba to! 01" --device x4pro
+```
+
+A whole library, where each series is a `.zip`, a `.cbz` or a folder of mokuro volumes:
+
+```bash
+# See what is there
+python3 tools/manga_convert/convert_mokuro_library.py --library ~/Documents/mokuro/Mokuro --list
+
+# Convert some series straight onto the card; the rest of the line goes to convert_manga.py
+python3 tools/manga_convert/convert_mokuro_library.py --library ~/Documents/mokuro/Mokuro \
+  --output-dir /path/to/sd/manga --series "Yotsuba" --series "Aho Girl" -- --yonkoma
+```
+
+Both scripts take `--device` to size the pages for your screen (`x3`, `x4`, `x4pro`, `papermono`, `eego` and so on);
+the library script defaults to `x4pro`. Each volume becomes `<series>/<volume>.matcha`. The title, the author (from a leading `[Author]` in the volume name),
+the series and the volume number come from the mokuro file, and the language is set to Japanese. Volumes already
+converted are skipped (`--force` converts them again), so a stopped run picks up where it left off, and a volume
+appears on the card only once it is complete. An archive that cannot be read, often a download that never finished,
+is reported and skipped. Text outside every panel, such as page numbers, is left out.
+
+The converter needs `pip install pillow`. `pip install ultralytics huggingface_hub` gives better panels (the panel
+model is downloaded on the first run); without it a simpler gutter search is used. Pass `--yonkoma` for 4-koma
+series.
+
 ### 6.7 Dictionary Files and Language Selection
 
 The reader picks the dictionary from the book's language tag, so you can keep several dictionaries and never

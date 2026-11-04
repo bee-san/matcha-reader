@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Convert manga (image folder / CBZ / EPUB) into CrossPoint Reader format.
+"""Convert manga (image folder / CBZ / EPUB / PDF / mokuro volume) into CrossPoint Reader format.
 
-Replaces the Mokuro-based pipeline (tools/mokuro_convert/). Mokuro infers
+A mokuro volume (<volume>.mokuro, see the "Mokuro input" section) brings its own OCR, so it skips
+the Gemini pass below. For everything else this replaces the old Mokuro-based pipeline
+(tools/mokuro_convert/). Mokuro infers
 panel boundaries by clustering OCR text-box positions, which only
 approximates real panels and produces nothing for panels without text. This
 tool instead:
@@ -125,6 +127,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -1728,6 +1731,191 @@ def _extract_epub_native_toc(epub_path: str, pages: list[str], work_dir: str) ->
         return []
 
 
+# ── Mokuro input ─────────────────────────────────────────────────
+#
+# mokuro (https://github.com/kha-white/mokuro) writes one `<volume>.mokuro` JSON file per volume
+# beside a `<volume>/` folder of page images. Its OCR already carries what panels.dat stores: text
+# blocks with a box, a vertical flag, and each printed line with its own box. A .mokuro input
+# therefore takes the place of the Gemini pass -- no API key, no network -- while panels are
+# still detected here, because mokuro has none.
+
+MOKURO_SUFFIX = ".mokuro"
+
+
+def is_mokuro(path: str) -> bool:
+    return path.lower().endswith(MOKURO_SUFFIX) and os.path.isfile(path)
+
+
+def load_mokuro(path: str) -> dict:
+    """Parse a .mokuro volume file; exits with a message when it is not one."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit(f"Error: cannot read {path}: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("pages"), list) or not data["pages"]:
+        sys.exit(f"Error: {path} has no pages; is it a mokuro volume file?")
+    return data
+
+
+def collect_mokuro_pages(path: str, data: dict) -> tuple[list[str], list[dict]]:
+    """Page image paths in mokuro's order, paired with each page's OCR record.
+
+    A page whose image is missing is dropped together with its record, so the two lists stay
+    index-aligned for the conversion loop.
+    """
+    image_dir = os.path.splitext(path)[0]
+    images, records, missing = [], [], []
+    for record in data["pages"]:
+        rel = _safe_archive_path(str(record.get("img_path", ""))) if isinstance(record, dict) else None
+        image = os.path.join(image_dir, *rel.split("/")) if rel else None
+        if not image or not os.path.isfile(image):
+            missing.append(str(record.get("img_path") if isinstance(record, dict) else record))
+            continue
+        images.append(image)
+        records.append(record)
+    # A book with pages silently missing would look complete and never be converted again.
+    if missing:
+        sys.exit(f"Error: {len(missing)} page image(s) listed in {path} are missing under {image_dir}, "
+                 f"e.g. {missing[0]!r}")
+    return images, records
+
+
+_BRACKETED_AUTHOR = re.compile(r"^\s*[\[(［（【](?P<author>[^\])］）】]+)[\])］）】]\s*(?P<rest>.+)$")
+_VOLUME_NUMBER = (
+    re.compile(r"第\s*(\d+(?:\.\d+)?)\s*巻"),
+    re.compile(r"(?i)\b(?:v|vol|volume)\.?\s*(\d+(?:\.\d+)?)"),
+    # A bare trailing number only when set apart: "Yotsuba to! 07", not "20世紀少年".
+    re.compile(r"(?:^|[\s_-])(\d+(?:\.\d+)?)\s*$"),
+)
+
+
+def mokuro_metadata(data: dict) -> tuple[str, str, str, float | None]:
+    """(title, author, series, series index) from a volume's mokuro header.
+
+    `title` in the file is the series and `volume` the book. Volume names from the usual sources
+    lead with the author in brackets -- "[ヒロユキ] アホガール 第01巻" -- so that becomes the author.
+    """
+    series = str(data.get("title") or "").strip()
+    # Replacement characters: names whose encoding was lost before mokuro ran ("��23��").
+    title = str(data.get("volume") or "").replace("\ufffd", "").strip()
+    author = ""
+    m = _BRACKETED_AUTHOR.match(title)
+    if m:
+        author, title = m.group("author").strip(), m.group("rest").strip()
+    # NFKC folds the full-width digits these names often use, for matching only.
+    folded = unicodedata.normalize("NFKC", title)
+    index = None
+    for pattern in _VOLUME_NUMBER:
+        n = pattern.search(folded)
+        if n:
+            index = float(n.group(1))
+            break
+    # A bare number says which volume, not which book.
+    if series and re.fullmatch(r"[\d\s._-]*", folded):
+        title = f"{series} {title}".strip()
+    return title or series, author, series, index
+
+
+# manga-ocr, which mokuro uses, writes an ellipsis as three full-width full stops and letters and
+# digits full width. The device gives each of those its own character cell along a printed line,
+# where the lettering has one cell for "…" and one for a short Latin run ("OK", "360"), so every
+# character after them would land a cell or more off. Fold them back to what was printed.
+_FULLWIDTH_ALNUM = {cp: cp - 0xFEE0 for lo, hi in ((0xFF10, 0xFF19), (0xFF21, 0xFF3A), (0xFF41, 0xFF5A))
+                    for cp in range(lo, hi + 1)}
+
+
+def mokuro_line_text(line: str) -> str:
+    return line.strip().replace("．．．", "…").translate(_FULLWIDTH_ALNUM)
+
+
+def mokuro_text_blocks(record: dict, source_size: tuple[int, int], crop_origin: tuple[int, int],
+                       crop_size: tuple[int, int], page_size: tuple[int, int]) -> list[dict]:
+    """One page's mokuro blocks in output page pixels, as {"box", "text", "lines", "vertical"}.
+
+    mokuro measured the page as img_width x img_height. The converter may then have cropped the
+    margin (crop_origin/crop_size, in source pixels) and downscaled the result to page_size, so
+    every point goes through all three. As with Gemini's output, line boxes are kept only when
+    every line has text and a box: line i must be the i-th '\n' segment of the text, and a partial
+    set would put every later line on the wrong one.
+    """
+    src_w, src_h = source_size
+    measured_w = record.get("img_width") or src_w
+    measured_h = record.get("img_height") or src_h
+    if abs(src_w / src_h - measured_w / measured_h) > 0.02 * src_w / src_h:
+        # Rotated or re-cropped since mokuro read it: its boxes no longer fit this image.
+        print(f"Warning: page {record.get('img_path')!r} is {src_w}x{src_h} but mokuro measured "
+              f"{measured_w}x{measured_h}; its text is skipped", file=sys.stderr)
+        return []
+    ox, oy = crop_origin
+    cw, ch = crop_size
+    pw, ph = page_size
+    kx, ky = src_w / measured_w * pw / cw, src_h / measured_h * ph / ch
+    off_x, off_y = ox * pw / cw, oy * ph / ch
+
+    def to_page(x1: float, y1: float, x2: float, y2: float) -> list[int] | None:
+        box = [max(0, min(pw, round(x1 * kx - off_x))), max(0, min(ph, round(y1 * ky - off_y))),
+               max(0, min(pw, round(x2 * kx - off_x))), max(0, min(ph, round(y2 * ky - off_y)))]
+        return box if box[2] > box[0] and box[3] > box[1] else None
+
+    blocks = []
+    for block in record.get("blocks") or []:
+        if not isinstance(block, dict) or not isinstance(block.get("lines"), list):
+            continue
+        texts = [mokuro_line_text(str(t)) for t in block["lines"]]
+        try:
+            box = to_page(*(float(v) for v in block.get("box", [])))
+        except (TypeError, ValueError):
+            box = None
+        if box is None or not any(texts):
+            continue
+        lines = []
+        coords = block.get("lines_coords")
+        if all(texts) and isinstance(coords, list) and len(coords) == len(texts):
+            for quad in coords:
+                try:
+                    xs = [float(pt[0]) for pt in quad]
+                    ys = [float(pt[1]) for pt in quad]
+                except (TypeError, ValueError, IndexError):
+                    lines = []
+                    break
+                line = to_page(min(xs), min(ys), max(xs), max(ys)) if xs and ys else None
+                if line is None:
+                    lines = []
+                    break
+                lines.append(line)
+        text = "\n".join(texts) if lines else "\n".join(t for t in texts if t)
+        blocks.append({"box": box, "text": text, "lines": lines[:255], "vertical": bool(block.get("vertical"))})
+    return blocks
+
+
+def assign_text_to_panels(blocks: list[dict], frames: list[list[int]], boxes: list[list[int]],
+                          rtl: bool = True) -> list[list[dict]]:
+    """Each text block goes to the panel it is drawn in, in reading order within the panel.
+
+    Ownership is decided against the panel frames as drawn, like expand_panels_over_text(), and
+    falls back to the grown crop boxes for a bubble outside every frame. A block outside every crop
+    -- a page number, a note in the margin -- is dropped: the zoomed panel it would be filed under
+    does not show it. mokuro lists blocks in detection order, so each panel's are sorted here; that
+    is the order the word cursor steps through them on the device.
+    """
+    owned: list[list[dict]] = [[] for _ in boxes]
+    for block in blocks:
+        box = block["box"]
+        for candidates in (frames, boxes):
+            if not candidates:
+                continue
+            owner = max(range(len(candidates)), key=lambda i: _overlap_area(candidates[i], box))
+            if _overlap_area(candidates[owner], box) > 0:
+                owned[owner].append(block)
+                break
+    for i, group in enumerate(owned):
+        if len(group) > 1:
+            by_box = {id(b["box"]): b for b in group}
+            owned[i] = [by_box[id(box)] for box in sort_panels_reading_order([b["box"] for b in group], rtl=rtl)]
+    return owned
+
+
 # ── Main pipeline ─────────────────────────────────────────────────
 
 
@@ -1764,7 +1952,7 @@ def normalize_for_output(img):
     return img
 
 
-def trim_page_margins(img, threshold: int = 230, pad: int = 2):
+def page_margin_box(img, threshold: int = 230, pad: int = 2) -> tuple[int, int, int, int] | None:
     """Crop the blank paper border off a scanned page, keeping the artwork.
 
     Printed comics and manga carry a white margin plus a page number that the
@@ -1774,8 +1962,8 @@ def trim_page_margins(img, threshold: int = 230, pad: int = 2):
     so every coordinate downstream already lives in the trimmed page's space.
 
     Detects content as "pixels darker than `threshold`" and keeps `pad` pixels
-    of paper around the result. Returns img unchanged when the page is blank or
-    has no margin to remove.
+    of paper around the result. Returns the (x1, y1, x2, y2) region to keep, or None when the page is
+    blank or has no margin to remove.
 
     ponytail: a single global threshold, so a dark scan edge or heavy dust
     along one border blocks the trim on that side. That fails safe (no crop),
@@ -1784,14 +1972,14 @@ def trim_page_margins(img, threshold: int = 230, pad: int = 2):
     gray = img.convert("L")
     bbox = gray.point(lambda p: 255 if p < threshold else 0, mode="1").getbbox()
     if not bbox:
-        return img
+        return None
     x1 = max(0, bbox[0] - pad)
     y1 = max(0, bbox[1] - pad)
     x2 = min(img.width, bbox[2] + pad)
     y2 = min(img.height, bbox[3] + pad)
     if (x1, y1, x2, y2) == (0, 0, img.width, img.height):
-        return img
-    return img.crop((x1, y1, x2, y2))
+        return None
+    return x1, y1, x2, y2
 
 
 def fit_to_device(img, target):
@@ -1840,10 +2028,13 @@ def pack_into_matcha(output_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert manga (image folder / CBZ / EPUB) into CrossPoint Reader format.",
+        description="Convert manga (image folder / CBZ / EPUB / PDF / .mokuro volume) into CrossPoint Reader format.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--input", required=True, help="Image folder, .cbz/.zip, or .epub")
+    parser.add_argument("--input", required=True,
+                        help="Image folder, .cbz/.zip, .epub, PDF, or a mokuro volume file (<volume>.mokuro, with "
+                             "its <volume>/ image folder beside it). A .mokuro input supplies the text itself, so "
+                             "no Gemini key is needed.")
     parser.add_argument("--output-dir", required=True, help="Book folder to write pages, panels and panels.idx/dat into; packed into <output-dir>.matcha "
                         "afterwards unless --legacy")
     parser.add_argument("--page-order-file", help="Text file listing source filenames in reading order, one per line")
@@ -1940,8 +2131,13 @@ def main():
     device_target = (DEVICE_TARGETS["x3"] if args.x3 else DEVICE_TARGETS["x4"] if args.x4
                      else DEVICE_SCREENS[args.device] if args.device else None)
 
+    mokuro_path = args.input if is_mokuro(args.input) else None
+    if mokuro_path and (args.webtoon or args.page_order_file):
+        sys.exit("Error: --webtoon and --page-order-file cannot be used with a .mokuro input: its text is tied to "
+                 "the volume's own pages in their own order.")
+
     api_key = None
-    if not args.no_ocr:
+    if not args.no_ocr and not mokuro_path:
         if args.gemini_key_file:
             with open(args.gemini_key_file, "r", encoding="utf-8") as f:
                 api_key = f.read().strip()
@@ -1960,7 +2156,12 @@ def main():
     work_dir = tempfile.mkdtemp(prefix="manga_convert_")
     try:
         print(f"Collecting pages from: {args.input}")
-        pages = collect_pages(args.input, work_dir, args.page_order_file)
+        mokuro_data = load_mokuro(mokuro_path) if mokuro_path else None
+        mokuro_pages: list[dict] = []
+        if mokuro_data:
+            pages, mokuro_pages = collect_mokuro_pages(mokuro_path, mokuro_data)
+        else:
+            pages = collect_pages(args.input, work_dir, args.page_order_file)
 
         # Resolve a table of contents before any --max-pages truncation, so
         # chapter page indices refer to the full book even when testing
@@ -1986,12 +2187,18 @@ def main():
 
         if args.max_pages:
             pages = pages[: args.max_pages]
+            mokuro_pages = mokuro_pages[: args.max_pages]
         print(f"Found {len(pages)} pages")
 
         os.makedirs(args.output_dir, exist_ok=True)
 
         # Extract and write book metadata (title + author + language).
-        auto_title, auto_author, auto_language, auto_series, auto_series_index = extract_metadata(args.input, work_dir)
+        if mokuro_data:
+            auto_title, auto_author, auto_series, auto_series_index = mokuro_metadata(mokuro_data)
+            auto_language = "ja"  # mokuro's OCR model reads Japanese only
+        else:
+            auto_title, auto_author, auto_language, auto_series, auto_series_index = extract_metadata(args.input,
+                                                                                                      work_dir)
         meta_title = args.title if args.title else auto_title
         meta_author = args.author if args.author else auto_author
         # Normalised here rather than only inside write_meta, because the OCR prompt is built
@@ -2029,18 +2236,17 @@ def main():
             # progressive even though the user passed --x4 precisely to avoid that. Note it here,
             # while `img` is still the file as opened.
             src_is_progressive = bool(img.info.get("progressive") or img.info.get("progression"))
-            if args.trim_margins:
-                trimmed = trim_page_margins(img)
-                if trimmed is not img:
-                    # The cropped page no longer matches the source file, so the verbatim
-                    # copy below must not be taken -- force a re-encode by the same route a
-                    # resize does.
-                    was_trimmed = True
-                    img = trimmed
-                else:
-                    was_trimmed = False
-            else:
-                was_trimmed = False
+            # The page region kept by --trim-margins, in source pixels: mokuro's boxes are mapped
+            # through it.
+            source_size = img.size
+            crop_origin, crop_size = (0, 0), img.size
+            crop_box = page_margin_box(img) if args.trim_margins else None
+            # The cropped page no longer matches the source file, so the verbatim copy below must
+            # not be taken -- force a re-encode by the same route a resize does.
+            was_trimmed = crop_box is not None
+            if was_trimmed:
+                img = img.crop(crop_box)
+                crop_origin, crop_size = crop_box[:2], img.size
             # Downscale FIRST, before panel detection: every coordinate downstream (panel boxes,
             # crop rects, OCR text boxes, the page dims in panels.idx) then lives in the resized
             # space, matching the page/crop files actually written -- nothing needs rescaling.
@@ -2095,11 +2301,19 @@ def main():
                 boxes = detect_webtoon_panels(img)
             else:
                 frames, text_boxes = detect_panels(img)
+                if mokuro_pages:
+                    # mokuro's blocks are exact where the detector's are guesses, and they cover
+                    # the bubbles a crop must not slice.
+                    page_text = mokuro_text_blocks(mokuro_pages[page_idx], source_size, crop_origin, crop_size,
+                                                   (img_w, img_h))
+                    text_boxes = text_boxes + [b["box"] for b in page_text]
                 # Order on the frames as drawn, then grow the crops over the
                 # bubbles -- expand_panels_over_text() is index-preserving, so
                 # the reading order established here survives the expansion.
                 frames = sort_panels_reading_order(frames, rtl=not args.ltr, column_major=args.yonkoma)
                 boxes = expand_panels_over_text(frames, text_boxes, img_w, img_h)
+            mokuro_by_panel = (assign_text_to_panels(page_text, frames, boxes, rtl=not args.ltr)
+                               if mokuro_pages else None)
 
             # Crop and save every panel first (fast, local) before dispatching
             # the slow network calls concurrently -- OCR is I/O-bound (network
@@ -2177,7 +2391,7 @@ def main():
                 translation = ocr_result.get("translation", "")
                 panel_w, panel_h = mx2 - mx1, my2 - my1
 
-                text_blocks = []
+                text_blocks = list(mokuro_by_panel[panel_idx]) if mokuro_by_panel else []
                 for b in ocr_result.get("blocks", []):
                     text = b.get("text", "").strip()
                     if not text:

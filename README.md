@@ -97,6 +97,8 @@ Any StarDict dictionary works, picked by the book's language. A missed lookup is
 
 Read panel by panel, each scaled to the screen, and look up words in the speech bubbles offline. Convert a CBZ, ZIP or PDF in the browser with [Matcha Reader Tools](https://eszter007.github.io/matcha-reader-tools/) and copy the `.matcha` file to the card. See [Guide §6.6](USER_GUIDE.md#66-manga-manhua-and-comics).
 
+Manga already processed by [mokuro](https://github.com/kha-white/mokuro) converts without Gemini, one volume at a time in [bee-san's Matcha Reader Tools](https://bee-san.github.io/matcha-reader-tools/manga.html) (choose the series zip, pick a volume), or with `tools/manga_convert/convert_manga.py`, which takes a `<volume>.mokuro` file and uses mokuro's own text and line boxes, so looking up single words in the bubbles works straight away. `tools/manga_convert/convert_mokuro_library.py` converts a whole folder of mokuro series at once. See [Guide §6.6](USER_GUIDE.md#converting-mokuro-manga).
+
 <p align="center">
   <img src="docs/images/screenshots/manga-full-page.png" width="200" alt="Full page view">
   <img src="docs/images/screenshots/manga-panel-zoom.png" width="200" alt="Panel zoom view">
@@ -146,9 +148,9 @@ A wallpaper over the page you were reading. The book shows through. See [Guide �
 - Translate the selected text from the touch selection bar
 - Optimize EPUB on upload: splits single-file novels into chapters and fits images to the screen
 - Japanese and Chinese interface language support
+- A light schedule (X4 Pro and other frontlit devices): the light comes on dim, and warm where the light supports it, at night, either at set times or from sunset to sunrise at your city, and goes off in the morning. See [Guide §1](USER_GUIDE.md#light-schedule)
 
 ## Setup
-- A light schedule (X4 Pro and other frontlit devices): the light comes on dim, and warm where the light supports it, at night, either at set times or from sunset to sunrise at your city, and goes off in the morning. See [Guide §1](USER_GUIDE.md#light-schedule)
 
 Files go onto the SD card with a card reader or over Wi-Fi from the device's **File Transfer** screen.
 
