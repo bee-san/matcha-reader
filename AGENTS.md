@@ -2,6 +2,13 @@
 
 CrossPoint Reader is open-source e-reader firmware for Xteink and other FreeInk-supported devices. Its mission is a lightweight, high-performance reading experience focused on EPUB rendering. The X3/X4's ESP32-C3 remains the resource baseline: roughly 380 KB usable RAM, no PSRAM, and a single framebuffer sized for the selected panel. Other board profiles have different CPUs, display sizes, input, and memory capabilities; check the selected profile before assuming them.
 
+## This fork: one reader, one device
+
+This fork (bee-san/matcha-reader) has one user, who reads on one device: an Xteink X4 Pro (`pio run -e x4pro`).
+Do not design, test or document for several devices. Cross-device cases, such as the Insights "All devices"
+view, progress or stats synced from another reader, and per-device labels, need no extra handling unless the
+user asks for it.
+
 ## FreeInk SDK
 
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
