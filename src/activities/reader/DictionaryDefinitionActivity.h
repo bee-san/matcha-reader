@@ -12,7 +12,6 @@
 #include "clippings/LookupClipHandles.h"
 #include "components/DictionaryPanel.h"
 #include "components/PanelTextPages.h"
-#include "util/ButtonNavigator.h"
 #include "util/SentenceMining.h"
 
 // Paged viewer for the definitions of one word, one entry per dictionary that has it, read as a
@@ -51,12 +50,15 @@ class DictionaryDefinitionActivity final : public Activity {
   void setMoreEntries(const MoreEntries& source) { more = source; }
   bool skipLoopDelay() override { return more.next != nullptr; }
 
+  // The book behind the panel reverses its page turns (Reversed Page Turn in a vertical book).
+  void setPageTurnReversed(const bool reversed) { pageTurnReversed = reversed; }
   void onEnter() override;
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
 
  private:
+  bool pageTurnReversed = false;
   LookupClipHandles clipHandles;
   MoreEntries more;
   // Past the last entry while more are coming: a Loading page the reader can step onto, which the
@@ -74,6 +76,8 @@ class DictionaryDefinitionActivity final : public Activity {
   void showEntry(size_t index, bool atLastPage);
   // One page forward (+1) or back (-1) through the whole flow. False at either end.
   bool stepPage(int direction);
+  // Straight to the neighbouring entry's first page, whatever page of this one is showing.
+  bool skipEntry(int direction);
 
   // Usable body-text area: the panel's inner rectangle.
   struct BodyArea {
@@ -111,5 +115,4 @@ class DictionaryDefinitionActivity final : public Activity {
   PanelTextPages textPages;  // plain-text path: wrapped spans of `definition`
   int currentPage = 0;
   int totalPages = 1;
-  ButtonNavigator buttonNavigator;
 };

@@ -16,7 +16,6 @@ class Page;
 #include "activities/Activity.h"
 #include "clippings/LookupClipHandles.h"
 #include "components/DictionaryPanel.h"
-#include "util/ButtonNavigator.h"
 #include "util/SentenceMining.h"
 
 // What the vertical reader hands the panel so the word cursor can be shown ON the page (select
@@ -88,6 +87,8 @@ class EpubReaderWordLookupActivity final : public Activity {
   using MiningContext = sentencemining::BookContext;
   void setMiningContext(MiningContext context) { mining_ = std::move(context); }
 
+  // The book behind the panel reverses its page turns (Reversed Page Turn in a vertical book).
+  void setPageTurnReversed(const bool reversed) { pageTurnReversed = reversed; }
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -100,6 +101,7 @@ class EpubReaderWordLookupActivity final : public Activity {
   bool wantsGlyphSlab() const override { return false; }
 
  private:
+  bool pageTurnReversed = false;
   WordSelectionScan scan;
 
   // Select: the page with a highlight box on the current word. Definition: the full-screen
@@ -306,6 +308,9 @@ class EpubReaderWordLookupActivity final : public Activity {
   // after the existing ones instead of replacing them.
   void splitDefinitionIntoSections(uint8_t appendDict = 0);
   void moveSection(int delta);
+  // A screenful through the entry, then onto the neighbouring page at its end.
+  void readOn(int delta);
+  void skipPage(int delta);
   // Text and footer label for what is on screen: the current section in tategaki, the whole
   // merged definition otherwise.
   const std::string& visibleDefinition() const;
@@ -324,8 +329,6 @@ class EpubReaderWordLookupActivity final : public Activity {
   // counter, instead of the free scrolling the horizontal and manga panels keep. scrollOffset
   // is still the source of truth -- paging just quantizes it to whole screenfuls.
   bool pagedDefinition() const { return selectCtx.valid(); }
-
-  ButtonNavigator buttonNavigator;
 
   // Scan-result persistence (empty path = disabled).
   std::string scanCachePath;

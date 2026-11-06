@@ -12,6 +12,7 @@
 #include <cstring>
 #include <tuple>
 
+#include "BookActivity.h"
 #include "BookStats.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
@@ -28,6 +29,7 @@
 #include "components/icons/eobStamp.h"
 #include "components/icons/tabBarIcons.h"
 #include "fontIds.h"
+#include "stats/StatsSync.h"
 #include "util/ButtonNavigator.h"
 #include "util/CjkScript.h"
 #include "util/DateFormat.h"
@@ -360,12 +362,21 @@ void EndOfBookOptions::loadSummary(const std::string& bookPath, const char* book
       totals.languageBooksFinished++;
     }
   }
+  // As Insights counts them: with "All devices" on, the books finished on the account's other readers too.
+  ReadingStatsStore::countAccountFinished(statsSync::insightsAccountKey(), bookLanguage, totals);
   summary.booksFinished = totals.booksFinished;
   stamp_ = stampFor(bookLanguage);
 
   BookStats stats;
   const bool haveStats =
       BookStats::recordFinish(bookPath.c_str(), today.year, today.month, today.day, firstFinish, stats);
+  // As Insights shows it: with "All devices" on, every device's history of the book (after recordFinish
+  // saved this card's own, which it must not include).
+  if (haveStats && statsSync::insightsAccountKey() != 0) {
+    bookactivity::Book everyDevice;
+    std::vector<BookDay> otherDays;
+    if (bookactivity::find(bookPath, everyDevice, otherDays)) stats.showEveryDevice(everyDevice.started, otherDays);
+  }
   // The stamp keeps the day the book was first finished, and the read that finished it: reopening the
   // book later, or looking words up in it, adds nothing.
   uint16_t year = today.year;
@@ -656,7 +667,9 @@ void EndOfBookOptions::drawTicket(const Rect& safe, const int bottom) const {
 void EndOfBookOptions::drawButtons(const int x, const int y, const int w, const int h, const int selected) const {
   constexpr int RADIUS = 10;
   constexpr int ICON = 32;
-  const bool homeSelected = isHomeIndex(selected);
+  // A touch board fills no button until one is pressed (see buttonCursorShown).
+  const bool cursorShown = MappedInputManager::buttonCursorShown();
+  const bool homeSelected = cursorShown && isHomeIndex(selected);
   const int homeW = nextName.empty() ? w : h;  // a square beside Continue
   homeRect = {x, y, homeW, h};
   if (homeSelected) {
@@ -685,7 +698,7 @@ void EndOfBookOptions::drawButtons(const int x, const int y, const int w, const 
   const int cx = x + homeW + 12;
   const int cw = w - homeW - 12;
   continueRect = {cx, y, cw, h};
-  const bool sel = !homeSelected;
+  const bool sel = cursorShown && !isHomeIndex(selected);
   if (sel) {
     renderer.fillRoundedRect(cx, y, cw, h, RADIUS, Color::Black);
   } else {

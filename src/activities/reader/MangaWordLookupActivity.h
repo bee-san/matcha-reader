@@ -8,7 +8,6 @@
 #include "WordSelectionScan.h"
 #include "activities/Activity.h"
 #include "components/DictionaryPanel.h"
-#include "util/ButtonNavigator.h"
 #include "util/SentenceMining.h"
 
 struct Rect;
@@ -29,6 +28,8 @@ class MangaWordLookupActivity final : public Activity {
   // The book, so a looked-up word can be saved for sentence mining (the sentence is the bubble's).
   void setMiningContext(sentencemining::BookContext context) { mining_ = std::move(context); }
 
+  // The book behind the panel reverses its page turns (Reversed Page Turn in a vertical book).
+  void setPageTurnReversed(const bool reversed) { pageTurnReversed = reversed; }
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -37,6 +38,7 @@ class MangaWordLookupActivity final : public Activity {
   bool skipLoopDelay() override { return !scan.isDone(); }
 
  private:
+  bool pageTurnReversed = false;
   WordSelectionScan scan;
 
   int cursorIndex = 0;
@@ -57,8 +59,6 @@ class MangaWordLookupActivity final : public Activity {
   // Body lines that fit at once, from the last render: the step a swipe scrolls by.
   int visibleCapacity = 1;
 
-  ButtonNavigator buttonNavigator;
-
   // Scan-result persistence (empty path = disabled).
   std::string scanCachePath;
   uint16_t scanPage = 0;
@@ -67,6 +67,8 @@ class MangaWordLookupActivity final : public Activity {
   void initScanFromCacheOrBurst();
   void runInitialBurst();
   void moveCursor(int delta);
+  // A screenful through the definition, then onto the neighbouring word at its end.
+  void readOn(int delta);
   // Sentence mining: saves the shown entry with the sentence from its speech bubble.
   sentencemining::BookContext mining_;
   DictionaryPanel::MiningFeedback miningFeedback_;
