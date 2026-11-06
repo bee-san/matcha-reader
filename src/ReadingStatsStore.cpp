@@ -328,6 +328,18 @@ int ReadingStatsStore::getLongestStreak(const char* language) const {
   return g ? std::max<int>({maxStreak, g->longestStreak, accountRecentRun(language, *g)}) : maxStreak;
 }
 
+ReadingStatsStore::BestDay ReadingStatsStore::getBestDay(const char* language) const {
+  char lang[4];
+  normalizeLanguage(language, lang);
+  BestDay best;
+  for (const auto& e : languageDays) {
+    if (memcmp(e.language, lang, sizeof(lang)) == 0 && e.minutesRead > best.minutes) {
+      best = {e.year, e.month, e.day, e.minutesRead};
+    }
+  }
+  return best;
+}
+
 int ReadingStatsStore::getDaysRead(const char* language) const {
   if (const auto* g = accountFor(language)) return accountDaysRead(language, *g);
   char lang[4];
@@ -461,6 +473,14 @@ int ReadingStatsStore::getLongestStreak() const {
   }
   const auto* g = accountFor(nullptr);
   return g ? std::max<int>({maxStreak, g->longestStreak, accountRecentRun(nullptr, *g)}) : maxStreak;
+}
+
+ReadingStatsStore::BestDay ReadingStatsStore::getBestDay() const {
+  BestDay best;
+  for (const auto& d : days) {
+    if (d.minutesRead > best.minutes) best = {d.year, d.month, d.day, d.minutesRead};
+  }
+  return best;
 }
 
 int ReadingStatsStore::getDaysRead() const {

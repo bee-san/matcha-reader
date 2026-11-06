@@ -23,6 +23,7 @@
 #include "components/StatsWidgets.h"
 #include "components/UITheme.h"
 #include "components/icons/flame.h"
+#include "components/icons/panelIcons.h"
 #include "components/icons/stats_icons.h"
 #include "fontIds.h"
 #include "stats/StatsSync.h"
@@ -44,6 +45,15 @@ void statsMonthStatus(const void* ctx, const uint16_t year, const uint8_t month,
 int statsDaysReadInMonth(const void* ctx, const uint16_t year, const uint8_t month) {
   return ctx ? READING_STATS_STORE.getDaysReadInMonth(static_cast<const char*>(ctx), year, month)
              : READING_STATS_STORE.getDaysReadInMonth(year, month);
+}
+
+// "34m" or "2h 14m".
+void formatMinutes(char* out, const size_t size, const int minutes) {
+  if (minutes >= 60) {
+    snprintf(out, size, "%dh %dm", minutes / 60, minutes % 60);
+  } else {
+    snprintf(out, size, "%dm", minutes);
+  }
 }
 }  // namespace
 
@@ -320,7 +330,7 @@ void ReadingStatsActivity::render(RenderLock&&) {
   // ==================== STREAK WIDGET ====================
   y += StatsWidgets::drawStreakCard(renderer, cardX, y, cardW, streak, weekMinutes, weekDays, today.dow) + 16;
 
-  // ==================== 4 STAT CARDS (2x2) ====================
+  // ==================== 6 STAT CARDS (2x3) ====================
   const int booksFinished =
       code ? static_cast<int>(READING_STATS_STORE.getBooksFinished(code)) : READING_STATS_STORE.getBooksFinished();
   const int daysRead = code ? READING_STATS_STORE.getDaysRead(code) : READING_STATS_STORE.getDaysRead();
@@ -336,13 +346,36 @@ void ReadingStatsActivity::render(RenderLock&&) {
     snprintf(timeBuf, sizeof(timeBuf), "%dm", static_cast<int>(totalMin));
   snprintf(streakLBuf, sizeof(streakLBuf), "%d", longestStreak);
 
-  const StatsWidgets::Tile tiles[4] = {
+  // This device's own per-day minutes: the fork is read on one device.
+  const uint16_t todayMin = code ? READING_STATS_STORE.getMinutesForDay(code, today.year, today.month, today.day)
+                                 : READING_STATS_STORE.getMinutesForDay(today.year, today.month, today.day);
+  const auto best = code ? READING_STATS_STORE.getBestDay(code) : READING_STATS_STORE.getBestDay();
+  char todayBuf[16], bestBuf[16], bestLabel[48];
+  formatMinutes(todayBuf, sizeof(todayBuf), todayMin);
+  formatMinutes(bestBuf, sizeof(bestBuf), best.minutes);
+  if (best.minutes > 0) {
+    char month[16];
+    StatsWidgets::monthAbbrev(best.month, month, sizeof(month));
+    // The year only when it is not this one.
+    if (best.year == today.year) {
+      snprintf(bestLabel, sizeof(bestLabel), "%s, %s %d", tr(STR_STAT_BEST_DAY), month, static_cast<int>(best.day));
+    } else {
+      snprintf(bestLabel, sizeof(bestLabel), "%s, %s %d %d", tr(STR_STAT_BEST_DAY), month, static_cast<int>(best.day),
+               static_cast<int>(best.year));
+    }
+  } else {
+    snprintf(bestLabel, sizeof(bestLabel), "%s", tr(STR_STAT_BEST_DAY));
+  }
+
+  const StatsWidgets::Tile tiles[6] = {
+      {todayBuf, tr(STR_STAT_READ_TODAY), PanelSunIcon, true},
+      {bestBuf, bestLabel, ChartBarIcon, true},
       {booksBuf, tr(STR_STAT_BOOKS_FINISHED), BookOpenIcon24, false},
       {daysBuf, tr(STR_STAT_DAYS_READ), CalendarIcon24, false},
       {timeBuf, tr(STR_STAT_TOTAL_TIME), ClockIcon24, false},
       {streakLBuf, tr(STR_STAT_LONGEST_STREAK), FlameIcon, true},
   };
-  y += StatsWidgets::drawTileGrid(renderer, cardX, y, cardW, tiles) + 8;
+  y += StatsWidgets::drawTileGrid(renderer, cardX, y, cardW, tiles, static_cast<int>(std::size(tiles))) + 8;
 
   // ==================== CALENDAR ====================
   const StatsWidgets::MonthSource source{code, statsMonthStatus, statsDaysReadInMonth};

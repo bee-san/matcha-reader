@@ -175,8 +175,17 @@ class ReadingStatsStore {
   };
   void getLanguages(std::vector<LanguageSummary>& out) const;
 
+  // The day with the most minutes read, the earliest of equals; minutes 0 when nothing was read.
+  struct BestDay {
+    uint16_t year = 0;
+    uint8_t month = 0;
+    uint8_t day = 0;
+    uint16_t minutes = 0;
+  };
+
   int getStreak(const char* language, uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay) const;
   int getLongestStreak(const char* language) const;
+  BestDay getBestDay(const char* language) const;
   int getDaysRead(const char* language) const;
   uint16_t getMinutesThisWeek(const char* language, uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay) const;
   void getWeekStatus(const char* language, uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay, int todayDow,
@@ -189,6 +198,7 @@ class ReadingStatsStore {
 
   int getStreak(uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay) const;
   int getLongestStreak() const;
+  BestDay getBestDay() const;
   int getDaysRead() const;
   uint32_t getTotalMinutes() const;
   uint16_t getBooksFinished() const;

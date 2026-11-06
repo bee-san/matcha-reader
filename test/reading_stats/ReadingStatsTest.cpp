@@ -68,6 +68,37 @@ TEST_F(StatsTest, NotReadTodayMeansNoCurrentStreak) {
   EXPECT_EQ(s.getLongestStreak(), 7);
 }
 
+TEST_F(StatsTest, BestDayIsTheMostMinutesEarliestFirst) {
+  auto& s = READING_STATS_STORE;
+  EXPECT_EQ(s.getBestDay().minutes, 0);
+  s.addMinutes(Y, M, 3, 40);
+  s.addMinutes(Y, M, 5, 95);
+  s.addMinutes(Y, M, 6, 95);
+  s.addMinutes(Y, M, 8, 20);
+  auto best = s.getBestDay();
+  EXPECT_EQ(best.minutes, 95);
+  EXPECT_EQ(best.year, Y);
+  EXPECT_EQ(best.month, M);
+  EXPECT_EQ(best.day, 5);
+
+  // More reading today overtakes it.
+  s.addMinutes(Y, M, 8, 80);
+  best = s.getBestDay();
+  EXPECT_EQ(best.day, 8);
+  EXPECT_EQ(best.minutes, 100);
+}
+
+TEST_F(StatsTest, BestDayPerLanguage) {
+  auto& s = READING_STATS_STORE;
+  s.addLanguageMinutes("ja", 30, Y, M, 2);
+  s.addLanguageMinutes("en", 200, Y, M, 4);
+  s.addLanguageMinutes("ja", 45, Y, M, 6);
+  EXPECT_EQ(s.getBestDay("ja").day, 6);
+  EXPECT_EQ(s.getBestDay("ja").minutes, 45);
+  EXPECT_EQ(s.getBestDay("en").day, 4);
+  EXPECT_EQ(s.getBestDay("fr").minutes, 0);
+}
+
 TEST_F(StatsTest, StreakCrossesMonthYearAndLeapDay) {
   auto& s = READING_STATS_STORE;
   s.addMinutes(2024, 2, 28, 10);
