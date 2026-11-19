@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -21,7 +22,17 @@ class RenderLock;  // forward declaration
 
 // LIBRARY covers both views: the cover grid and upstream's indexed list, chosen by
 // SETTINGS.libraryView. READING_STATS is this fork's own entry.
-enum class HomeMenuItem { NONE, FILE_BROWSER, LIBRARY, OPDS_BROWSER, FILE_TRANSFER, READING_STATS, SETTINGS_MENU };
+enum class HomeMenuItem {
+  NONE,
+  FILE_BROWSER,
+  LIBRARY,
+  PLUGINS,
+  OPDS_BROWSER,
+  FILE_TRANSFER,
+  READING_STATS,
+  FLASHCARDS,
+  SETTINGS_MENU
+};
 
 /**
  * ActivityManager
@@ -57,6 +68,9 @@ class ActivityManager {
   // build needs. Empty when none is pending.
   std::string pendingReaderPath;
   bool pendingReaderFastRefresh = false;
+  // Set on leaving a reader until a menu screen takes the scrub. See noteReaderResidue().
+  bool readerResidueOwed = false;
+  void noteReaderResidue(const Activity& next);
 
   // Task to render and display the activity
   TaskHandle_t renderTaskHandle = nullptr;
@@ -105,6 +119,7 @@ class ActivityManager {
   // goTo... functions are convenient wrapper for replaceActivity()
   void goToFileTransfer();
   void goToReadingStats();
+  void goToFlashcards();
   void goToJoinNetwork();  // File Transfer straight into Join Network (post heap-defrag reboot)
   void goToUsbDrive();
   // openSection jumps straight into one group (End = the section list).
@@ -117,7 +132,7 @@ class ActivityManager {
   // The server list as the Library's OPDS tab: picking a server opens the browser, so moving
   // across the tabs never starts Wi-Fi.
   void goToOpdsServers();
-  void goToPlugins(bool showOpds);
+  void goToPlugins();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
   void goToSleep(bool fromTimeout = false);
   void goToBoot();

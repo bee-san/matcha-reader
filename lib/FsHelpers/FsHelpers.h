@@ -6,6 +6,8 @@
 #include <string_view>
 #include <vector>
 
+#include "DeviceTextFiles.h"
+
 namespace FsHelpers {
 
 // Public-storage check for generated artifacts. Keep this outside HalStorage so callers can

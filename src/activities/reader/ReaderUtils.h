@@ -199,13 +199,11 @@ inline PageTurnResult detectPageTurnImpl(const MappedInputManager& input, const 
   // apply to them -- they are added after the swap below, and a button set to "Next Page"
   // advances in a tategaki book exactly as it does in a horizontal one. The shared roles keep
   // being reversed, which is what that setting is for.
-  const bool explicitPrev =
-      input.sideActionFired(CrossPointSettings::SIDE_BTN_PREV_PAGE) ||
-      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_PREV_PAGE &&
-       input.wasReleased(MappedInputManager::Button::Power) && !gpio.wasReleased(HalGPIO::BTN_DOWN));
-  const bool explicitNext = input.sideActionFired(CrossPointSettings::SIDE_BTN_NEXT_PAGE) ||
-                            (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
-                             input.wasReleased(MappedInputManager::Button::Power));
+  const bool explicitPrev = input.sideActionFired(CrossPointSettings::SIDE_BTN_PREV_PAGE) ||
+                            input.wasPowerAction(CrossPointSettings::SHORT_PWRBTN::PWR_PREV_PAGE);
+  const bool explicitNext =
+      input.sideActionFired(CrossPointSettings::SIDE_BTN_NEXT_PAGE) ||
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN && input.wasPowerSingleClick());
   const bool tilt = tiltPrev || tiltNext;
   if (reversed) return {next || explicitPrev, prev || explicitNext, tilt};
   return {prev || explicitPrev, next || explicitNext, tilt};
@@ -241,8 +239,7 @@ inline PageTurnResult detectPageTurnForOrientation(const MappedInputManager& inp
 // Word Lookup. What it DOES depends on the view: on the page it selects the highlighted word;
 // in the definition it closes the dictionary outright.
 inline bool wordLookupPowerClick(const MappedInputManager& input) {
-  return SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::WORD_LOOKUP &&
-         input.wasReleased(MappedInputManager::Button::Power) && !gpio.wasReleased(HalGPIO::BTN_DOWN);
+  return input.wasPowerAction(CrossPointSettings::SHORT_PWRBTN::WORD_LOOKUP);
 }
 
 // Stepping inside a panel that has no pages of its own (word select, a definition): the X3/X4
@@ -254,12 +251,8 @@ enum class PanelStep : uint8_t { None, Previous, Next };
 inline PanelStep lookupPanelStep(const MappedInputManager& input) {
   if (input.sideActionFired(CrossPointSettings::SIDE_BTN_PREV_PAGE)) return PanelStep::Previous;
   if (input.sideActionFired(CrossPointSettings::SIDE_BTN_NEXT_PAGE)) return PanelStep::Next;
-  // Skipped when Down is also released so the screenshot combo does not step the cursor.
-  if (!input.wasReleased(MappedInputManager::Button::Power) || gpio.wasReleased(HalGPIO::BTN_DOWN)) {
-    return PanelStep::None;
-  }
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_PREV_PAGE) return PanelStep::Previous;
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN) return PanelStep::Next;
+  if (input.wasPowerAction(CrossPointSettings::SHORT_PWRBTN::PWR_PREV_PAGE)) return PanelStep::Previous;
+  if (input.wasPowerAction(CrossPointSettings::SHORT_PWRBTN::PAGE_TURN)) return PanelStep::Next;
   return PanelStep::None;
 }
 
@@ -360,17 +353,21 @@ inline TouchPageTurn detectTouchPageTurn(const GfxRenderer& renderer, const Mapp
 // so it remains free in tap mode. The Off/Swipe Up
 // alternatives are only surfaced on home-key boards (SettingsList), where the
 // menu stays reachable through the key's long-press function.
-inline bool isTouchMenuTap(const GfxRenderer& renderer, const MappedInputManager& input) {
-  if (!input.hasTouch()) return false;
+// The centre third of the screen, where a tap opens the reader menu when Show Reader Menu is Tap.
+inline bool isInTouchMenuZone(const GfxRenderer& renderer, const int x, const int y) {
   if (SETTINGS.showReaderMenu != CrossPointSettings::READER_MENU_TAP) return false;
-  int x = 0;
-  int y = 0;
-  if (!input.wasScreenTapped(x, y)) return false;
   const int width = renderer.getScreenWidth();
   const int height = renderer.getScreenHeight();
   const int zoneWidth = width / 3;
   const int zoneHeight = height / 3;
   return x >= zoneWidth && x < width - zoneWidth && y >= zoneHeight && y < height - zoneHeight;
+}
+
+inline bool isTouchMenuTap(const GfxRenderer& renderer, const MappedInputManager& input) {
+  if (!input.hasTouch()) return false;
+  int x = 0;
+  int y = 0;
+  return input.wasScreenTapped(x, y) && isInTouchMenuZone(renderer, x, y);
 }
 
 // Reader menu opens on the menu edge-swipe or a center-third tap. Home-key
@@ -484,6 +481,14 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.restoreBwBuffer();
 }
 
+// Book page presentation: lets the panel use its reading waveform.
+struct ReaderRefreshScope {
+  ReaderRefreshScope() { display.setReaderRefresh(true); }
+  ~ReaderRefreshScope() { display.setReaderRefresh(false); }
+  ReaderRefreshScope(const ReaderRefreshScope&) = delete;
+  ReaderRefreshScope& operator=(const ReaderRefreshScope&) = delete;
+};
+
 struct BackNavCallback {
   void* ctx;
   void (*fn)(void*);
@@ -498,6 +503,11 @@ struct BackNavCallback {
 // - with backShortToFileBrowser: go to file browser.
 inline bool handleBackNavigation(const MappedInputManager& mappedInput, ActivityManager& activityManager,
                                  const char* filePath, BackNavCallback goHome) {
+  if (mappedInput.homeButtonAction() == HomeButtonAction::FileBrowser) {
+    activityManager.goToFileBrowser(filePath);
+    return true;
+  }
+
   // The reading surface deliberately has no left-edge swipe-to-exit path: in
   // swipe page-turn mode a right swipe must page back instead. Home remains
   // available through the board's dedicated Home gesture/key. Back swipes stay

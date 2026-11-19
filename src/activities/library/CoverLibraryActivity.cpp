@@ -67,10 +67,6 @@ bool writeExactChunked(HalFile& file, const void* input, const size_t length) {
   return true;
 }
 
-// Diagnostic artifact written by HalSystem::checkPanic() to the SD root -- a .txt file the
-// library walk would otherwise list as a book.
-bool isCrashReportFile(const char* name) { return strcmp(name, "crash_report.txt") == 0; }
-
 }  // namespace
 
 // One SD pass for every CJK title/author on the screen; repaints then hit the resident tables
@@ -603,7 +599,7 @@ void CoverLibraryActivity::scanDirectoryEntry() {
   if ((!FsHelpers::hasEpubExtension(filename) && !FsHelpers::hasXtcExtension(filename) &&
        !FsHelpers::hasTxtExtension(filename) && !FsHelpers::hasMarkdownExtension(filename) &&
        !FsHelpers::hasMatchaExtension(filename)) ||
-      isCrashReportFile(name)) {
+      FsHelpers::isDeviceTextFile(name)) {
     return;
   }
 
@@ -856,7 +852,7 @@ TabRing::Focus CoverLibraryActivity::ringFocus() const {
 }
 
 void CoverLibraryActivity::ringSetFocus(const TabRing::Focus focus, const bool atEnd) {
-  tabFocus = focus == TabRing::Focus::BottomBar ? static_cast<int>(HomeTab::Library) : -1;
+  tabFocus = focus == TabRing::Focus::BottomBar ? HomeTabBar::slotOf(HomeTab::Library) : -1;
   selectorVisible = true;
   if (focus == TabRing::Focus::BottomBar) return;
   if (openShelfIndex >= 0) {
@@ -1507,11 +1503,7 @@ void CoverLibraryActivity::drawShelfRow(const int shelfIdx, const int itemY, con
   renderer.drawText(UI_10_FONT_ID, textX, nameY, shelf.folderName.c_str(), true, EpdFontFamily::BOLD);
 
   char countBuf[32];
-  if (shelf.bookCount == 1) {
-    snprintf(countBuf, sizeof(countBuf), "%s", tr(STR_SHELF_BOOK_COUNT_1));
-  } else {
-    snprintf(countBuf, sizeof(countBuf), tr(STR_SHELF_BOOK_COUNT_N), shelf.bookCount);
-  }
+  I18N.formatCount(countBuf, sizeof(countBuf), StrId::STR_SHELF_BOOK_COUNT, shelf.bookCount);
   renderer.drawText(SMALL_FONT_ID, textX, nameY + smallLH + 1, countBuf, true);
 
   const int chevronSize = 6;

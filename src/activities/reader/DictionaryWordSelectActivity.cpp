@@ -14,6 +14,7 @@
 #include <cstdlib>
 
 #include "BookStats.h"
+#include "CrossPointSettings.h"
 #include "DictionaryDefinitionActivity.h"
 #include "HapticFeedback.h"
 #include "ReaderUtils.h"
@@ -412,6 +413,8 @@ void DictionaryWordSelectActivity::performLookup() {
       return;
     }
     definitionView->setPageTurnReversed(pageTurnReversed);
+    if (SETTINGS.vocabularyHistoryEnabled) definitionView->setVocabulary(vocabularyContext(mining_));
+    definitionView->setNestedLookup({this, &DictionaryWordSelectActivity::nestedLookup});
     if (moreWords) {
       definitionView->setMoreEntries(
           {this, &DictionaryWordSelectActivity::nextSelectionWord, &DictionaryWordSelectActivity::selectionFailure});
@@ -741,21 +744,29 @@ void DictionaryWordSelectActivity::lookUpInto(const char* text, const std::strin
       if (status.result == Dictionary::LookupResult::NotFound) status.result = lookupResult;
       continue;
     }
-    entry.dictSlot = static_cast<uint8_t>(d);
-    if (repeated(shown, entry) || repeated(out, entry)) continue;
-    if (selectionHeldBytes + entry.definition.size() > byteLimit) continue;
-    selectionHeldBytes += entry.definition.size();
-    entry.dictName = slot.dict.getBookName();
-    entry.html = slot.dict.definitionsAreHtml();
-    auto& draft = entry.draft;
-    draft.card.word = entry.headword;
-    draft.card.sentence = sentence;
-    draft.card.book = mining_.bookTitle;
-    draft.card.author = mining_.bookAuthor;
-    draft.card.dictionary = entry.dictName;
-    draft.language = sentencemining::languageForDictionary(slot.folder, language);
-    draft.bookPath = mining_.bookPath;
-    out.push_back(std::move(entry));
+    // The first match, then the other headwords a .syn entry points at, each as its own entry.
+    const uint8_t synonymMatches = slot.dict.moreSynonymMatches();
+    for (uint8_t m = 0;; m++) {
+      entry.dictSlot = static_cast<uint8_t>(d);
+      if (!repeated(shown, entry) && !repeated(out, entry) &&
+          selectionHeldBytes + entry.definition.size() <= byteLimit) {
+        selectionHeldBytes += entry.definition.size();
+        entry.dictName = slot.dict.getBookName();
+        entry.html = slot.dict.definitionsAreHtml();
+        auto& draft = entry.draft;
+        draft.card.word = entry.headword;
+        draft.card.sentence = sentence;
+        draft.card.book = mining_.bookTitle;
+        draft.card.author = mining_.bookAuthor;
+        draft.card.dictionary = entry.dictName;
+        draft.language = sentencemining::languageForDictionary(slot.folder, language);
+        draft.bookPath = mining_.bookPath;
+        out.push_back(std::move(entry));
+      }
+      if (m >= synonymMatches) break;
+      entry = DictionaryDefinitionActivity::Entry{};
+      if (!slot.dict.readSynonymMatch(m, entry.definition, entry.headword)) break;
+    }
   }
 }
 
@@ -814,6 +825,22 @@ bool DictionaryWordSelectActivity::nextSelectionWord(void* ctx,
   if (!status.ok && kept.ok) kept = status;
   if (status.ok && kept.ok && kept.result == Dictionary::LookupResult::NotFound) kept.result = status.result;
   return true;
+}
+
+bool DictionaryWordSelectActivity::nestedLookup(void* ctx, const char* word,
+                                                std::vector<DictionaryDefinitionActivity::Entry>& out, StrId& failure) {
+  auto* self = static_cast<DictionaryWordSelectActivity*>(ctx);
+  // The selection walk counts its own bytes in selectionHeldBytes; a nested word must not use them up.
+  const size_t heldBefore = self->selectionHeldBytes;
+  self->selectionHeldBytes = 0;
+  out.reserve(self->dictCount);
+  LookupStatus status;
+  self->lookUpInto(word, std::string(), {}, out, MAX_SELECTION_BYTES, status);
+  self->selectionHeldBytes = heldBefore;
+  // Not minable: a card needs the book's sentence, and this word has none.
+  for (auto& entry : out) entry.draft = {};
+  if (out.empty()) failure = failureMessage(status);
+  return !out.empty();
 }
 
 StrId DictionaryWordSelectActivity::selectionFailure(void* ctx) {

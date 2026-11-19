@@ -154,6 +154,11 @@ class ReadingStatsStore {
   void addBookMinutes(const char* bookPath, const char* language, uint16_t minutes, uint16_t year, uint8_t month,
                       uint8_t day);
   const std::vector<BookReading>& getBooks() const { return books; }
+  // A correction to one book's day (the web Stats editor): `delta` minutes, negative to take off, on
+  // the day's total, the book language's day and the book's total. Nothing drops below zero, a day
+  // left at zero is removed, and the book's last-read day is kept. Time of day has no dates, so it
+  // stays as it was.
+  void adjustBookDay(const char* bookPath, uint16_t year, uint8_t month, uint8_t day, int32_t delta);
   // Same minutes again, bucketed by day and language. Unlike addBookMinutes this DOES record an
   // empty language, as its own "unknown" bucket -- dropping it would make the per-language days
   // silently disagree with the overall ones for anyone reading TXT/XTC.
@@ -175,34 +180,36 @@ class ReadingStatsStore {
   };
   void getLanguages(std::vector<LanguageSummary>& out) const;
 
-  // The day with the most minutes read, the earliest of equals; minutes 0 when nothing was read.
-  struct BestDay {
-    uint16_t year = 0;
-    uint8_t month = 0;
-    uint8_t day = 0;
-    uint16_t minutes = 0;
-  };
-
   int getStreak(const char* language, uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay) const;
   int getLongestStreak(const char* language) const;
-  BestDay getBestDay(const char* language) const;
   int getDaysRead(const char* language) const;
   uint16_t getMinutesThisWeek(const char* language, uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay) const;
   void getWeekStatus(const char* language, uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay, int todayDow,
                      bool readDays[7]) const;
   void getMonthStatus(const char* language, uint16_t year, uint8_t month, bool out[32]) const;
   int getDaysReadInMonth(const char* language, uint16_t year, uint8_t month) const;
+  // The day with the most minutes on this card, overall (nullptr) or in one language; the earliest
+  // on a tie. Zero minutes when nothing was read.
+  struct BestDay {
+    uint16_t year = 0;
+    uint8_t month = 0;
+    uint8_t day = 0;
+    uint16_t minutes = 0;
+  };
+  BestDay getBestDay(const char* language) const;
   // Can undercount: language lives in the per-book block, which is capped and LRU-evicted, so a
   // book finished long ago may have lost its tag. Never overcounts.
   uint16_t getBooksFinished(const char* language) const;
 
   int getStreak(uint16_t todayYear, uint8_t todayMonth, uint8_t todayDay) const;
   int getLongestStreak() const;
-  BestDay getBestDay() const;
   int getDaysRead() const;
   uint32_t getTotalMinutes() const;
   uint16_t getBooksFinished() const;
   bool isFinished(const std::string& bookPath) const;
+  // Moves books' reading time and finished marks to their new paths (books moved or renamed on the
+  // card): pairs of old and new path. Loads, changes and saves the tables.
+  static bool renameBooks(const std::vector<std::pair<std::string, std::string>>& moves);
   const std::vector<DailyReading>& getDays() const { return days; }
   uint32_t getTimeOfDayMinutes(const uint8_t bucket) const { return timeOfDayMinutes[bucket]; }
   uint32_t getTimeOfDayBase(const uint8_t bucket) const { return timeOfDayBase[bucket]; }

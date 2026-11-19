@@ -88,49 +88,6 @@ TEST_F(StatsTest, NotReadTodayIgnoresFutureDays) {
   EXPECT_EQ(s.getStreak(Y, M, 8), 2);
 }
 
-// Yesterday's minutes still only in the journal keep the streak in the summary too.
-TEST_F(StatsTest, SummaryKeepsStreakFromJournalYesterday) {
-  auto& s = READING_STATS_STORE;
-  for (uint8_t d = 1; d <= 6; d++) s.addMinutes(Y, M, d, 10);
-  ASSERT_TRUE(s.saveToFile());
-  READING_STATS_STORE = ReadingStatsStore{};
-  ASSERT_TRUE(s.record({Y, M, 7, 15, "/b.epub", "en", nullptr}));
-  EXPECT_EQ(s.summarize(Y, M, 8, nullptr).streak, 7);
-  ASSERT_TRUE(s.loadFromFile());
-  EXPECT_EQ(s.getStreak(Y, M, 8), 7);
-}
-
-TEST_F(StatsTest, BestDayIsTheMostMinutesEarliestFirst) {
-  auto& s = READING_STATS_STORE;
-  EXPECT_EQ(s.getBestDay().minutes, 0);
-  s.addMinutes(Y, M, 3, 40);
-  s.addMinutes(Y, M, 5, 95);
-  s.addMinutes(Y, M, 6, 95);
-  s.addMinutes(Y, M, 8, 20);
-  auto best = s.getBestDay();
-  EXPECT_EQ(best.minutes, 95);
-  EXPECT_EQ(best.year, Y);
-  EXPECT_EQ(best.month, M);
-  EXPECT_EQ(best.day, 5);
-
-  // More reading today overtakes it.
-  s.addMinutes(Y, M, 8, 80);
-  best = s.getBestDay();
-  EXPECT_EQ(best.day, 8);
-  EXPECT_EQ(best.minutes, 100);
-}
-
-TEST_F(StatsTest, BestDayPerLanguage) {
-  auto& s = READING_STATS_STORE;
-  s.addLanguageMinutes("ja", 30, Y, M, 2);
-  s.addLanguageMinutes("en", 200, Y, M, 4);
-  s.addLanguageMinutes("ja", 45, Y, M, 6);
-  EXPECT_EQ(s.getBestDay("ja").day, 6);
-  EXPECT_EQ(s.getBestDay("ja").minutes, 45);
-  EXPECT_EQ(s.getBestDay("en").day, 4);
-  EXPECT_EQ(s.getBestDay("fr").minutes, 0);
-}
-
 TEST_F(StatsTest, StreakCrossesMonthYearAndLeapDay) {
   auto& s = READING_STATS_STORE;
   s.addMinutes(2024, 2, 28, 10);
@@ -1328,4 +1285,136 @@ TEST_F(StatsTest, TempFileWithoutItsTimeOfDayIsNotAdopted) {
   ASSERT_TRUE(s.loadFromFile());
   EXPECT_EQ(s.getTimeOfDayMinutes(3), 7u) << "replayed from the journal, not lost to the cut-off file";
   EXPECT_EQ(s.getTotalMinutes(), 7u);
+}
+
+// --- A book moved or renamed keeps its insights (issue #828) ---------------------------------
+
+namespace {
+// Reading time and a finish for `path`, folded into the stats file.
+void readAndFinish(const char* path, const uint16_t minutes) {
+  auto& s = READING_STATS_STORE;
+  ASSERT_TRUE(s.record({Y, M, 5, minutes, path, "ja", path}));
+  ASSERT_TRUE(s.compact());
+  READING_STATS_STORE = ReadingStatsStore{};
+}
+
+uint32_t minutesOf(const std::string& path) {
+  for (const auto& b : READING_STATS_STORE.getBooks()) {
+    if (b.path == path) return b.minutesRead;
+  }
+  return 0;
+}
+
+// The book file itself, on the test card: a history whose book is there is not taken over.
+void putBook(const std::string& path) {
+  std::filesystem::create_directories(std::filesystem::path(testRoot() + path).parent_path());
+  std::ofstream(testRoot() + path) << "book";
+}
+void removeBook(const std::string& path) { std::filesystem::remove(testRoot() + path); }
+
+void openTwiceAndRead(const char* path) {
+  ASSERT_TRUE(BookStats::recordOpen(path));
+  ASSERT_TRUE(BookStats::recordOpen(path));
+  ASSERT_TRUE(BookStats::addMinutes(path, Y, M, 5, 30));
+}
+}  // namespace
+
+TEST_F(StatsTest, RenamedBookKeepsReadingTimeAndFinish) {
+  readAndFinish("/books/a.epub", 40);
+  ASSERT_TRUE(ReadingStatsStore::renameBooks({{"/books/a.epub", "/read/a.epub"}}));
+  const ReadingStatsStore::Loaded loaded;
+  ASSERT_TRUE(loaded.loaded());
+  EXPECT_EQ(minutesOf("/read/a.epub"), 40u);
+  EXPECT_EQ(minutesOf("/books/a.epub"), 0u);
+  EXPECT_TRUE(READING_STATS_STORE.isFinished("/read/a.epub"));
+  EXPECT_FALSE(READING_STATS_STORE.isFinished("/books/a.epub"));
+}
+
+TEST_F(StatsTest, BookHistoryFollowsAMove) {
+  openTwiceAndRead("/books/a.epub");
+  ASSERT_TRUE(BookStats::movePath("/books/a.epub", "/read/a.epub"));
+  EXPECT_FALSE(std::filesystem::exists(testRoot() + BookStats::filePathFor("/books/a.epub")));
+  BookStats b;
+  ASSERT_TRUE(b.load("/read/a.epub"));
+  EXPECT_EQ(b.getSessions(), 2u);
+  EXPECT_EQ(b.getTotalMinutes(), 30u);
+}
+
+TEST_F(StatsTest, MoveKeepsHistoryAlreadyAtTheNewPath) {
+  putBook("/books/a.epub");
+  openTwiceAndRead("/books/a.epub");
+  ASSERT_TRUE(BookStats::recordOpen("/read/a.epub"));
+  EXPECT_FALSE(BookStats::movePath("/books/a.epub", "/read/a.epub"));
+  BookStats b;
+  ASSERT_TRUE(b.load("/read/a.epub"));
+  EXPECT_EQ(b.getSessions(), 1u);
+  ASSERT_TRUE(b.load("/books/a.epub"));
+  EXPECT_EQ(b.getSessions(), 2u) << "nothing was lost";
+}
+
+// Moved over USB: the reader never saw the move. The first open at the new path takes the history
+// of the same-named book that is gone.
+TEST_F(StatsTest, HistoryFollowsABookMovedOutsideTheReader) {
+  openTwiceAndRead("/books/a.epub");
+  readAndFinish("/books/a.epub", 30);
+  ASSERT_TRUE(BookStats::recordOpen("/本/a.epub"));
+  BookStats b;
+  ASSERT_TRUE(b.load("/本/a.epub"));
+  EXPECT_EQ(b.getSessions(), 3u);
+  EXPECT_EQ(b.getTotalMinutes(), 30u);
+  const ReadingStatsStore::Loaded loaded;
+  ASSERT_TRUE(loaded.loaded());
+  EXPECT_EQ(minutesOf("/本/a.epub"), 30u);
+  EXPECT_TRUE(READING_STATS_STORE.isFinished("/本/a.epub"));
+}
+
+TEST_F(StatsTest, ACopyStartsItsOwnHistory) {
+  putBook("/books/a.epub");  // the original stays
+  openTwiceAndRead("/books/a.epub");
+  ASSERT_TRUE(BookStats::recordOpen("/copy/a.epub"));
+  BookStats b;
+  ASSERT_TRUE(b.load("/copy/a.epub"));
+  EXPECT_EQ(b.getSessions(), 1u);
+  ASSERT_TRUE(b.load("/books/a.epub"));
+  EXPECT_EQ(b.getSessions(), 2u);
+}
+
+TEST_F(StatsTest, TwoGoneBooksOfTheSameNameAreNotGuessed) {
+  putBook("/one/a.epub");
+  putBook("/two/a.epub");
+  openTwiceAndRead("/one/a.epub");
+  openTwiceAndRead("/two/a.epub");
+  removeBook("/one/a.epub");
+  removeBook("/two/a.epub");
+  ASSERT_TRUE(BookStats::recordOpen("/three/a.epub"));
+  BookStats b;
+  ASSERT_TRUE(b.load("/three/a.epub"));
+  EXPECT_EQ(b.getSessions(), 1u);
+}
+
+TEST_F(StatsTest, BestDayIsTheDayWithTheMostMinutes) {
+  auto& s = READING_STATS_STORE;
+  EXPECT_EQ(s.getBestDay(nullptr).minutes, 0);
+  s.addMinutes(2025, 12, 31, 50);
+  s.addMinutes(Y, M, 3, 30);
+  s.addMinutes(Y, M, 3, 40);  // the same day adds up to 70
+  s.addMinutes(Y, M, 5, 70);  // a tie keeps the earlier day
+  s.addMinutes(Y, M, 6, 20);
+  const auto best = s.getBestDay(nullptr);
+  EXPECT_EQ(best.year, Y);
+  EXPECT_EQ(best.month, M);
+  EXPECT_EQ(best.day, 3);
+  EXPECT_EQ(best.minutes, 70);
+}
+
+TEST_F(StatsTest, BestDayPerLanguage) {
+  auto& s = READING_STATS_STORE;
+  s.addLanguageMinutes("ja-JP", 45, Y, M, 2);
+  s.addLanguageMinutes("en", 90, Y, M, 3);
+  s.addLanguageMinutes("ja", 20, Y, M, 4);
+  const auto ja = s.getBestDay("ja");
+  EXPECT_EQ(ja.day, 2);
+  EXPECT_EQ(ja.minutes, 45);
+  EXPECT_EQ(s.getBestDay("en").day, 3);
+  EXPECT_EQ(s.getBestDay("de").minutes, 0);
 }

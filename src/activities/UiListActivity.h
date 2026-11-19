@@ -3,6 +3,7 @@
 #include <BoardConfig.h>
 
 #include <atomic>
+#include <cstdint>
 
 #include "activities/Activity.h"
 #include "components/HomeTabBar.h"
@@ -82,6 +83,8 @@ class UiListActivity : public Activity, protected UiAppHost, public TabRing::Hos
   virtual void drawChrome();
   // Button hints, drawn after the app renders. Default: Back/Select/Up/Down.
   virtual void drawFooter();
+  // Label for the Confirm hint; empty hides it when the selected row has nothing to open.
+  virtual const char* confirmHint() const;
 
   // --- helpers ---------------------------------------------------------------
   // Measure visibleRows for the screen band, apply follow-on-build, clamp the
@@ -116,6 +119,8 @@ class UiListActivity : public Activity, protected UiAppHost, public TabRing::Hos
   // activeNav() in shared code; `nav` is the single-list default storage.
   freeink::ui::ListNav nav;
   ButtonNavigator buttonNavigator;
+  // The next render uses a cleanup (HALF) refresh instead of a fast one.
+  bool cleanNextRefresh = false;
 
   // Where the cursor is heading, including a move parked by moveSelectionTo() because the render
   // task held the lock. Navigation must step from THIS, not from nav.selected: while a move is

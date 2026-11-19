@@ -5,6 +5,8 @@
 #include <I18n.h>
 #include <freertos/FreeRTOS.h>
 
+#include <cstdint>
+
 struct Rect;
 class Page;
 
@@ -12,10 +14,14 @@ class Page;
 #include <string>
 #include <vector>
 
+#include "DefinitionTextRenderer.h"
+#include "DictionaryDefinitionActivity.h"
+#include "JapaneseNestedLookup.h"
 #include "WordSelectionScan.h"
 #include "activities/Activity.h"
 #include "clippings/LookupClipHandles.h"
 #include "components/DictionaryPanel.h"
+#include "util/LookupCounter.h"
 #include "util/SentenceMining.h"
 
 // What the vertical reader hands the panel so the word cursor can be shown ON the page (select
@@ -102,6 +108,18 @@ class EpubReaderWordLookupActivity final : public Activity {
 
  private:
   bool pageTurnReversed = false;
+  // The definition panel is open over this activity, which keeps the page, cursor and scan.
+  bool panelOpen = false;
+  bool panelFailed = false;  // the panel could not be allocated: low memory until Confirm retries
+  void openPanel();
+  static bool scanTick(void* ctx);
+  void appendEntries(size_t first, std::vector<DictionaryDefinitionActivity::Entry>& out);
+  void drawPageBehindPanel();
+  static bool stepWord(void* ctx, int direction, std::vector<DictionaryDefinitionActivity::Entry>& out);
+  static bool nextSelectionEntries(void* ctx, const std::vector<DictionaryDefinitionActivity::Entry>& shown,
+                                   std::vector<DictionaryDefinitionActivity::Entry>& fresh);
+  static StrId selectionFailure(void* ctx);
+  static void drawBackdrop(void* ctx);
   WordSelectionScan scan;
 
   // Select: the page with a highlight box on the current word. Definition: the full-screen
@@ -160,9 +178,6 @@ class EpubReaderWordLookupActivity final : public Activity {
   // inverted debris on the page.
   HighlightBox drawnBoxes[kMaxHighlightBoxes];
   int drawnBoxCount = 0;
-  // Handles on the word behind the definition card (touch boards): written by the render task
-  // under boxMux, read by the loop's hit test. They are opaque, so moving them repaints the page.
-  LookupClipHandles clipHandles;
 
   // The reader opens the panel on a long press, so the Confirm release that follows belongs to
   // that press, not to a selection. Ignore it until a fresh press is seen.
@@ -228,7 +243,6 @@ class EpubReaderWordLookupActivity final : public Activity {
   void enterDefinition();
   void returnToSelect();
   bool handleSelectInput();
-  bool handleDefinitionInput();
   void moveSelection(int delta);
   void jumpColumn(int direction);
   // Index math for a reading-order step, WITHOUT the dictionary read moveCursor() does. Returns
@@ -277,6 +291,10 @@ class EpubReaderWordLookupActivity final : public Activity {
   std::string resultHeadword;
   std::string resultDefinition;
   std::string resultReading;
+  std::string resultFurigana;  // the dictionary's per-kanji reading (Anki syntax), if it has one
+  // The furigana printed over the looked-up word on the page, in Anki syntax: the first choice
+  // for a saved card's Furigana field.
+  std::string pageFurigana;
   std::string resultGrammar;
   int resultMatchLen = 0;
   bool hasGrammar = false;
@@ -293,6 +311,7 @@ class EpubReaderWordLookupActivity final : public Activity {
   std::vector<std::string> sectionText;
   std::vector<std::string> sectionLabel;
   std::vector<std::string> sectionReading;
+  std::vector<std::string> sectionFurigana;
   std::vector<std::string> sectionGrammar;
   // Which Japanese index answered each piece: several can answer one lookup, so the panel names
   // it. StrId rather than a string: these are UI words, not the dictionaries' own titles.
@@ -307,27 +326,10 @@ class EpubReaderWordLookupActivity final : public Activity {
   // appendDict != 0: resultDefinition holds one further entry from that dictionary; its pages go
   // after the existing ones instead of replacing them.
   void splitDefinitionIntoSections(uint8_t appendDict = 0);
-  void moveSection(int delta);
-  // A screenful through the entry, then onto the neighbouring page at its end.
-  void readOn(int delta);
-  void skipPage(int delta);
-  // Text and footer label for what is on screen: the current section in tategaki, the whole
-  // merged definition otherwise.
-  const std::string& visibleDefinition() const;
-  const char* visibleLabel() const;
-  const char* visibleKind() const;
-  const char* visibleHeadword() const;
-  const char* visibleReading() const;
-  const char* visibleGrammar() const;
+  int scrollOffset = 0;  // lines scrolled within current entry
 
-  int scrollOffset = 0;     // lines scrolled within current entry
-  int totalLines = 0;       // total lines in current definition
-  int maxScroll = 0;        // max scroll offset (leaves a screenful visible)
-  int visibleCapacity = 1;  // body lines that fit at once; the step size in paged mode
-
-  // Vertical (tategaki) reading pages the definition a screenful at a time and shows a page
-  // counter, instead of the free scrolling the horizontal and manga panels keep. scrollOffset
-  // is still the source of truth -- paging just quantizes it to whole screenfuls.
+  // With word geometry the entry shows one page per source; without it, one text through which
+  // reading on moves to the page's next word.
   bool pagedDefinition() const { return selectCtx.valid(); }
 
   // Scan-result persistence (empty path = disabled).
@@ -371,13 +373,7 @@ class EpubReaderWordLookupActivity final : public Activity {
   // Sentence mining: saves the visible entry with its sentence (Select, or the panel's + button).
   // The corner turns into a check once it is saved, and a short popup reports each save.
   MiningContext mining_;
-  DictionaryPanel::MiningFeedback miningFeedback_;
-  // Hashes of the headwords shown this session, so browsing back and forth counts each word
-  // once; the total goes to BookStats in one write on exit.
-  static constexpr size_t MAX_COUNTED_LOOKUPS = 256;
-  std::vector<uint32_t> countedLookups_;
-  void countLookup();
-  void saveSentence();
+  LookupCounter lookupCounter;  // distinct headwords shown, for the book's stats
   std::string miningSentence() const;
   void performLookup();
   void performLookupImpl();
@@ -411,12 +407,11 @@ class EpubReaderWordLookupActivity final : public Activity {
   std::vector<SelectionSpan> selectionSpans;
   void appendSelectionEntry(DictEntry&& entry, size_t textOffset, size_t matchBytes);
   void countSelectionWord(size_t firstNew);
-  std::string selectionMiningSentence() const;
+  std::string selectionMiningSentence(size_t section) const;
   // While the walk runs, one page past the last entry says more is coming. It holds no section:
   // the section vectors only ever hold entries.
   bool loadingPageShown() const { return selectionWalk == SelectionWalk::Running && !sectionText.empty(); }
   bool onLoadingPage() const { return loadingPageShown() && currentSection >= static_cast<int>(sectionText.size()); }
-  int pageCount() const { return static_cast<int>(sectionText.size()) + (loadingPageShown() ? 1 : 0); }
   std::atomic<bool> noMatchPopupPending{false};
   size_t currentAllGlyphIndex() const;
   std::string buildLookupText() const;
@@ -424,7 +419,4 @@ class EpubReaderWordLookupActivity final : public Activity {
   bool initialRenderDone = false;
   int fastRefreshCount = 0;
   static constexpr int kFullRefreshInterval = 10;
-
-  // Draws the definition text (or the loading/no-match notice) into the panel's inner rectangle.
-  void renderContentArea(const Rect& body);
 };

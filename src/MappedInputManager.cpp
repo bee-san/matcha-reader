@@ -18,6 +18,15 @@ namespace fui = freeink::ui;
 void MappedInputManager::update(const bool deferHomeButtonAction) const {
   remoteInput.reset();
   gpio.update();
+  const bool powerHeld = gpio.isPressed(HalGPIO::BTN_POWER);
+  const bool powerReleased = gpio.wasReleased(HalGPIO::BTN_POWER);
+  const bool sharedConfirmRelease =
+      BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmPowerHold &&
+      gpio.wasReleased(HalGPIO::BTN_CONFIRM);
+  // Shared keys are physically held before the SDK emits logical Power.
+  powerButtonInput.update(isPowerHeld(), powerReleased || sharedConfirmRelease,
+                          (powerHeld || powerReleased) ? gpio.getPowerButtonHeldTime() : 0,
+                          SETTINGS.getPowerButtonDuration());
   // Any front-button press, hold, or release restarts the ghost window that
   // sideReleaseAlone() enforces for custom side-button actions.
   if (gpio.isPressed(HalGPIO::BTN_BACK) || gpio.isPressed(HalGPIO::BTN_CONFIRM) || gpio.isPressed(HalGPIO::BTN_LEFT) ||
@@ -48,9 +57,68 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       HalHaptics::feedback(SETTINGS.vibration != CrossPointSettings::VIBRATION_OFF, true, SETTINGS.hapticIntensity);
     }
   }
+  powerSleepFrame = false;
+  powerSingleClickFrame = false;
+  powerClickAction = CrossPointSettings::IGNORE;
+  const bool classifyPower =
+      CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE;
+  if (classifyPower && !gpio.isPressed(HalGPIO::BTN_DOWN) && !powerButtonInput.suppressesHold() &&
+      !wasPowerReleaseConsumed()) {
+    const auto click = powerButtonClickInput.update(millis(), gpio.isPressed(HalGPIO::BTN_POWER),
+                                                    wasShortPowerReleased(), gpio.getPowerButtonHeldTime());
+    powerSingleClickFrame = click == PowerButtonClickInput::Click::Single;
+    if (click != PowerButtonClickInput::Click::None) {
+      const auto action = click == PowerButtonClickInput::Click::Double ? SETTINGS.doublePwrBtn : SETTINGS.shortPwrBtn;
+      powerClickAction = action;
+      switch (action) {
+        case CrossPointSettings::IGNORE:
+          break;
+        case CrossPointSettings::SLEEP:
+          powerSleepFrame = true;
+          break;
+        case CrossPointSettings::PAGE_TURN:
+          homeAction = HomeButtonAction::NextPage;
+          break;
+        case CrossPointSettings::FORCE_REFRESH:
+          homeAction = HomeButtonAction::Refresh;
+          break;
+        case CrossPointSettings::FOOTNOTES:
+          homeAction = HomeButtonAction::Footnotes;
+          break;
+        case CrossPointSettings::PWR_CONFIRM:
+          homeAction = HomeButtonAction::Confirm;
+          break;
+        case CrossPointSettings::CREATE_CLIPPING:
+          homeAction = HomeButtonAction::CreateClipping;
+          break;
+        case CrossPointSettings::PWR_BOOKMARK:
+          homeAction = HomeButtonAction::Bookmark;
+          break;
+        case CrossPointSettings::PWR_SYNC:
+          homeAction = HomeButtonAction::Sync;
+          break;
+        case CrossPointSettings::PWR_READER_MENU:
+          homeAction = HomeButtonAction::ReaderMenu;
+          break;
+        case CrossPointSettings::PWR_FRONTLIGHT:
+          homeAction = HomeButtonAction::ToggleFrontlight;
+          break;
+        case CrossPointSettings::PWR_SYNC_STATS_CLOCK:
+          homeAction = HomeButtonAction::SyncStatsClock;
+          break;
+        case CrossPointSettings::PWR_SYNC_CLOCK:
+          homeAction = HomeButtonAction::SyncClock;
+          break;
+        default:
+          break;  // Word Lookup and Previous Page are read through wasPowerAction().
+      }
+    }
+  } else {
+    powerButtonClickInput.reset();
+  }
   // A short power click can carry a home-button action (see SHORT_PWRBTN): the reader shortcuts
   // for touch boards without a Home key, and the syncs on every board.
-  if (homeAction == HomeButtonAction::Ignore && mapButton(Button::Power, &HalGPIO::wasReleased)) {
+  if (!classifyPower && homeAction == HomeButtonAction::Ignore && wasShortPowerReleased()) {
     switch (SETTINGS.shortPwrBtn) {
       case CrossPointSettings::PWR_BOOKMARK:
         homeAction = HomeButtonAction::Bookmark;
@@ -70,6 +138,12 @@ void MappedInputManager::update(const bool deferHomeButtonAction) const {
       default:
         break;
     }
+  }
+  if (deferHomeButtonAction) {
+    deferredPowerSleepFrame = deferredPowerSleepFrame || powerSleepFrame;
+  } else {
+    powerSleepFrame = powerSleepFrame || deferredPowerSleepFrame;
+    deferredPowerSleepFrame = false;
   }
   if (deferHomeButtonAction) {
     // Keep the first action observed during a synchronous transfer. Home must
@@ -464,11 +538,8 @@ bool MappedInputManager::wasLightPanelGesture() const { return wasTopEdgeDownSwi
 #if FREEINK_CAP_TOUCH
 bool MappedInputManager::wasPowerConfirmClick() const {
   if (!gpio.hasTouch() || SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM) return false;
-  // Wait out the X4 Pro's frontlight double-click window before treating its
-  // first release as Confirm. With the shortcut disabled, and on other touch
-  // boards, the release counts directly.
-  if (BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight) return powerConfirmClickFrame;
-  return gpio.wasReleased(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration();
+  if (CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) return false;
+  return wasShortPowerReleased();
 }
 #endif
 
@@ -492,7 +563,18 @@ bool MappedInputManager::wasPressed(const Button button) const {
   return mapButton(button, &HalGPIO::wasPressed);
 }
 
+bool MappedInputManager::wasPowerAction(const uint8_t action) const {
+  if (CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) {
+    return powerClickAction == action;
+  }
+  return SETTINGS.shortPwrBtn == action && wasPowerSingleClick() && !gpio.wasReleased(HalGPIO::BTN_DOWN);
+}
+
 bool MappedInputManager::wasReleased(const Button button) const {
+  if (button == Button::Power && CrossPointSettings::hasPowerDoubleClick() &&
+      SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE) {
+    return false;  // Classified clicks are dispatched once through homeAction.
+  }
   if (button == Button::Confirm && remoteInput.button == RemoteButton::Confirm) return true;
   if (button == Button::Back && remoteInput.button == RemoteButton::Back) return true;
   if ((button == Button::NavNext || button == Button::Right) && remoteInput.button == RemoteButton::Next) return true;

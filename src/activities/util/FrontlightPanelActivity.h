@@ -32,6 +32,9 @@ class FrontlightPanelActivity final : public Activity, private UiAppHost {
   // showing the night pair, and an unchanged pair must not overwrite a value set elsewhere
   // (Light Schedule, web settings).
   bool levelsChanged = false;
+  // The pair the sliders showed on entry, so a window edge while the panel is open does not file
+  // night levels as the daytime ones.
+  bool editingNightLevels = false;
   bool draggingSlider = false;
   // The touch tile toggles SETTINGS.touchReaderControls between off and this
   // remembered mode, so a Swipe or Inverted Tap user gets their mode back

@@ -12,6 +12,7 @@
 #include <numeric>
 
 #include "BookStatsDownload.h"
+#include "stats/StatsRecords.h"
 
 ReadingStatsStore ReadingStatsStore::instance;
 
@@ -117,11 +118,7 @@ void normalizeLanguage(const char* in, char out[4]) {
   if (alias != std::end(ALIASES)) strncpy(out, alias->to, 4);
 }
 
-int daysInMonth(uint16_t y, uint8_t m) {
-  static constexpr int dm[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0))) return 29;
-  return dm[m];
-}
+using statsrecords::daysInMonth;
 }  // namespace
 
 void ReadingStatsStore::addMinutes(uint16_t year, uint8_t month, uint8_t day, uint16_t minutes) {
@@ -208,6 +205,42 @@ void ReadingStatsStore::addBookMinutes(const char* bookPath, const char* languag
   // Deliberately not reserve(MAX_BOOKS): that would commit ~11KB of DRAM the moment the first
   // book is read. This grows one entry per new book, not in a loop.
   books.push_back({bookPath, lang, minutes, today});
+}
+
+void ReadingStatsStore::adjustBookDay(const char* bookPath, const uint16_t year, const uint8_t month, const uint8_t day,
+                                      const int32_t delta) {
+  if (!bookPath || !*bookPath || delta == 0) return;
+  BookReading* book = nullptr;
+  for (auto& b : books) {
+    if (b.path == bookPath) book = &b;
+  }
+  const char* language = book ? book->language.c_str() : "";
+  if (delta > 0) {
+    const auto add = static_cast<uint16_t>(delta > UINT16_MAX ? UINT16_MAX : delta);
+    addMinutes(year, month, day, add);
+    addLanguageMinutes(language, add, year, month, day);
+    if (book) book->minutesRead += add;
+    return;
+  }
+  const auto take = static_cast<uint32_t>(-delta);
+  const int epoch = daysSinceEpoch(year, month, day);
+  for (auto it = days.begin(); it != days.end(); ++it) {
+    if (daysSinceEpoch(it->year, it->month, it->day) != epoch) continue;
+    it->minutesRead = static_cast<uint16_t>(it->minutesRead > take ? it->minutesRead - take : 0);
+    if (it->minutesRead == 0) days.erase(it);
+    break;
+  }
+  char lang[4];
+  normalizeLanguage(language, lang);
+  for (auto it = languageDays.begin(); it != languageDays.end(); ++it) {
+    if (daysSinceEpoch(it->year, it->month, it->day) != epoch || memcmp(it->language, lang, sizeof(lang)) != 0) {
+      continue;
+    }
+    it->minutesRead = static_cast<uint16_t>(it->minutesRead > take ? it->minutesRead - take : 0);
+    if (it->minutesRead == 0) languageDays.erase(it);
+    break;
+  }
+  if (book) book->minutesRead = book->minutesRead > take ? book->minutesRead - take : 0;
 }
 
 void ReadingStatsStore::addLanguageMinutes(const char* language, const uint16_t minutes, const uint16_t year,
@@ -328,18 +361,6 @@ int ReadingStatsStore::getLongestStreak(const char* language) const {
   return g ? std::max<int>({maxStreak, g->longestStreak, accountRecentRun(language, *g)}) : maxStreak;
 }
 
-ReadingStatsStore::BestDay ReadingStatsStore::getBestDay(const char* language) const {
-  char lang[4];
-  normalizeLanguage(language, lang);
-  BestDay best;
-  for (const auto& e : languageDays) {
-    if (memcmp(e.language, lang, sizeof(lang)) == 0 && e.minutesRead > best.minutes) {
-      best = {e.year, e.month, e.day, e.minutesRead};
-    }
-  }
-  return best;
-}
-
 int ReadingStatsStore::getDaysRead(const char* language) const {
   if (const auto* g = accountFor(language)) return accountDaysRead(language, *g);
   char lang[4];
@@ -390,6 +411,28 @@ int ReadingStatsStore::getDaysReadInMonth(const char* language, const uint16_t y
     if (status[d]) count++;
   }
   return count;
+}
+
+ReadingStatsStore::BestDay ReadingStatsStore::getBestDay(const char* language) const {
+  BestDay best;
+  int32_t bestEpoch = 0;
+  const auto consider = [&](const uint16_t year, const uint8_t month, const uint8_t day, const uint16_t minutes) {
+    if (minutes == 0 || minutes < best.minutes) return;
+    const int32_t epoch = daysSinceEpoch(year, month, day);
+    if (minutes == best.minutes && epoch >= bestEpoch) return;
+    best = {year, month, day, minutes};
+    bestEpoch = epoch;
+  };
+  if (!language) {
+    for (const auto& d : days) consider(d.year, d.month, d.day, d.minutesRead);
+    return best;
+  }
+  char lang[4];
+  normalizeLanguage(language, lang);
+  for (const auto& e : languageDays) {
+    if (memcmp(e.language, lang, sizeof(lang)) == 0) consider(e.year, e.month, e.day, e.minutesRead);
+  }
+  return best;
 }
 
 uint16_t ReadingStatsStore::getBooksFinished(const char* language) const {
@@ -474,14 +517,6 @@ int ReadingStatsStore::getLongestStreak() const {
   }
   const auto* g = accountFor(nullptr);
   return g ? std::max<int>({maxStreak, g->longestStreak, accountRecentRun(nullptr, *g)}) : maxStreak;
-}
-
-ReadingStatsStore::BestDay ReadingStatsStore::getBestDay() const {
-  BestDay best;
-  for (const auto& d : days) {
-    if (d.minutesRead > best.minutes) best = {d.year, d.month, d.day, d.minutesRead};
-  }
-  return best;
 }
 
 int ReadingStatsStore::getDaysRead() const {
@@ -1330,6 +1365,29 @@ bool ReadingStatsStore::compact() {
   if (!ok) LOG_ERR("STAT", "Stats journal not folded in; kept for the next try");
   release();
   return ok;
+}
+
+bool ReadingStatsStore::renameBooks(const std::vector<std::pair<std::string, std::string>>& moves) {
+  if (moves.empty()) return true;
+  const Loaded loaded;
+  if (!loaded.loaded()) return false;
+  ReadingStatsStore& store = getInstance();
+  bool changed = false;
+  for (const auto& [from, to] : moves) {
+    for (BookReading& book : store.books) {
+      if (book.path == from) {
+        book.path = to;
+        changed = true;
+      }
+    }
+    for (std::string& finishedPath : store.finishedBookPaths) {
+      if (finishedPath == from) {
+        finishedPath = to;
+        changed = true;
+      }
+    }
+  }
+  return !changed || store.saveToFile();
 }
 
 bool ReadingStatsStore::isFinished(const std::string& bookPath) const {

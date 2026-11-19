@@ -12,6 +12,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <new>
 
 #include "../Memory/Memory.h"
 #include "FontCacheManager.h"
@@ -236,9 +237,89 @@ void GfxRenderer::begin() {
                                 for (auto& entry : ttfFonts_) {
                                   if (entry.second) entry.second->releaseResidentCaches();
                                 }
+                                // Shed, never delete: the sink can run from inside a sized face's
+                                // own glyph fault, which releaseResidentCaches() already skips.
+                                for (auto& slot : sizedVectorFaces_) {
+                                  if (slot.font) slot.font->releaseResidentCaches();
+                                }
                                 const size_t after = freeink::MemoryManager::instance().freeBytes();
                                 return after > before ? after - before : 0;
                               }});
+#endif
+}
+
+void GfxRenderer::unregisterTtfFont(const int fontId) {
+  const auto it = ttfFonts_.find(fontId);
+  if (it == ttfFonts_.end()) return;
+#if CROSSPOINT_VECTOR_FONTS
+  // Only a root owns FreeType faces; a registered variant (a UI or lookup size) borrows them.
+  if (it->second && it->second->root() == it->second) releaseSizedVectorFaces(it->second);
+#endif
+  ttfFonts_.erase(it);
+}
+
+void GfxRenderer::releaseSizedVectorFaces(const TtfEpdFont* root) const {
+#if CROSSPOINT_VECTOR_FONTS
+  for (auto& slot : sizedVectorFaces_) {
+    if (slot.root == nullptr || (root != nullptr && slot.root != root)) continue;
+    delete slot.font;
+    slot = {};
+  }
+#else
+  (void)root;
+#endif
+}
+
+TtfEpdFont* GfxRenderer::sizedVectorFace(const int fontId, const uint16_t scale) const {
+#if CROSSPOINT_VECTOR_FONTS
+  // Below this, a few percent of size is less than a pixel of stretch and not worth a face.
+  static constexpr uint16_t MIN_POINT_SIZE = 6;
+  static constexpr uint16_t MAX_POINT_SIZE = 96;
+  // A cap, not a reservation: the arena (PSRAM, FontPsram) grows to what the page draws. A
+  // paragraph of large kanji is a few hundred glyphs of ~1 KB each.
+  static constexpr size_t GLYPH_CACHE_BYTES = 256 * 1024;
+  static constexpr uint16_t MAX_GLYPHS = 1024;
+
+  if (scale == 256) return nullptr;
+  const auto it = ttfFonts_.find(fontId);
+  if (it == ttfFonts_.end() || it->second == nullptr) return nullptr;
+  TtfEpdFont* base = it->second;
+  const uint32_t target = (static_cast<uint32_t>(base->pointSize()) * scale + 128) / 256;
+  if (target == base->pointSize() || target < MIN_POINT_SIZE || target > MAX_POINT_SIZE) return nullptr;
+
+  const TtfEpdFont* root = base->root();
+  SizedVectorFace* victim = &sizedVectorFaces_[0];
+  for (auto& slot : sizedVectorFaces_) {
+    if (slot.root == root && slot.pointSize == target) {
+      slot.lastUse = ++sizedVectorClock_;
+      return slot.font;  // nullptr when creating it failed: stay on the scaled bitmap
+    }
+    if (slot.root == nullptr) {
+      victim = &slot;
+    } else if (victim->root != nullptr && slot.lastUse < victim->lastUse) {
+      victim = &slot;
+    }
+  }
+
+  delete victim->font;
+  *victim = {};
+  // The slot is filled only once the face works; a failure is remembered so it is not retried
+  // per glyph, until the root is released or the slot is reused.
+  auto* face = new (std::nothrow) TtfEpdFont();
+  if (face == nullptr) {
+    LOG_ERR("GFX", "OOM: sized vector face %upt", static_cast<unsigned>(target));
+  } else if (!face->loadVariantOf(*base, static_cast<uint16_t>(target), /*twoBit=*/true, GLYPH_CACHE_BYTES,
+                                  MAX_GLYPHS)) {
+    LOG_ERR("GFX", "Sized vector face %upt failed", static_cast<unsigned>(target));
+    delete face;
+    face = nullptr;
+  }
+  *victim = {root, static_cast<uint16_t>(target), face, ++sizedVectorClock_};
+  return face;
+#else
+  (void)fontId;
+  (void)scale;
+  return nullptr;
 #endif
 }
 
@@ -950,6 +1031,28 @@ static void renderCharAtScale(const GfxRenderer& renderer, const GfxRenderer::Re
   }
 }
 
+// Draws one glyph of a word set at `scale`. A vector font's own glyph comes from a copy of the
+// font rasterized at that size, at the same pen position, so it stays sharp; everything else
+// (bitmap fonts, glyphs borrowed from a fallback, SUP/SUB) is the scaled bitmap.
+template <TextRotation Rotation = TextRotation::None>
+static void drawGlyphAtScale(const GfxRenderer& renderer, const GfxRenderer::RenderMode renderMode, const int fontId,
+                             const EpdFontFamily& font, const uint32_t cp, const int cursorX, const int cursorY,
+                             const bool black, const EpdFontFamily::Style style, const uint16_t scale) {
+#if CROSSPOINT_VECTOR_FONTS
+  const bool supSub = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0;
+  if (scale != 256 && !supSub && font.getDataForGlyph(cp, style) == font.getData(style)) {
+    if (TtfEpdFont* sized = renderer.sizedVectorFace(fontId, scale)) {
+      const EpdFontFamily sharp = sized->family();
+      renderCharImpl<Rotation>(renderer, renderMode, sharp, cp, cursorX, cursorY, black, style);
+      return;
+    }
+  }
+#else
+  (void)fontId;
+#endif
+  renderCharAtScale<Rotation>(renderer, renderMode, font, cp, cursorX, cursorY, black, style, scale);
+}
+
 // IMPORTANT: This function is in critical rendering path and is called for every pixel. Please keep it as simple and
 // efficient as possible.
 void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
@@ -1137,6 +1240,8 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     // font-native position. Fonts without their glyphs — the built-ins — miss
     // the getGlyph lookup and skip them, as before.
     if (utf8IsCombiningMark(cp) || BidiUtils::isTransparentMark(cp)) {
+      // getGlyph falls back to U+FFFD, which would be stamped over the base.
+      if (!font.hasCodepoint(cp, style)) continue;
       const EpdGlyph* combiningGlyph = font.getGlyph(cp, style);
       if (!combiningGlyph) continue;
       const auto anchor = combiningMark::anchorFor(cp);
@@ -1342,7 +1447,7 @@ int GfxRenderer::layoutTextScaled(const int resolvedFontId, const int x, const i
     } else {
       prevScale = scale;
     }
-    if (draw) renderCharAtScale(*this, renderMode, font, cp, lastBaseX, yPos, black, style, prevScale);
+    if (draw) drawGlyphAtScale(*this, renderMode, resolvedFontId, font, cp, lastBaseX, yPos, black, style, prevScale);
     prevCp = cp;
   }
   pen256 += fp4::toPixel(prevAdvanceFP) * prevScale;  // final glyph's advance
@@ -1577,7 +1682,9 @@ void GfxRenderer::drawPixelDither<Color::DarkGray>(const int x, const int y) con
   drawPixel(x, y, (x + y) % 2 == 0);  // TODO: maybe find a better pattern?
 }
 
-void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color) const {
+void GfxRenderer::fillRectDither(const int x, const int y, const int width, const int height, Color color,
+                                 const DitherMode mode) const {
+  if (mode == DitherMode::PreserveInk && color == Color::White) return;
   switch (color) {
     case Color::Clear:
       break;
@@ -1588,16 +1695,17 @@ void GfxRenderer::fillRectDither(const int x, const int y, const int width, cons
       fillRectImpl<Color::White>(x, y, width, height);
       break;
     case Color::LightGray:
-      fillRectImpl<Color::LightGray>(x, y, width, height);
+      fillRectImpl<Color::LightGray>(x, y, width, height, mode);
       break;
     case Color::DarkGray:
-      fillRectImpl<Color::DarkGray>(x, y, width, height);
+      fillRectImpl<Color::DarkGray>(x, y, width, height, mode);
       break;
   }
 }
 
 template <Color C>
-void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const int height) const {
+void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const int height,
+                               const DitherMode mode) const {
   if constexpr (C == Color::Clear) return;
   if (width <= 0 || height <= 0) return;
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
@@ -1741,11 +1849,21 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
       const uint8_t blackMask = blackMasks[py & 1];
       const uint8_t whiteMask = static_cast<uint8_t>(~blackMask);
 
-      // Dither writes BOTH inks (the slow path called drawPixel for every
-      // pixel — setting or clearing — so we must do the same). Inside the
-      // rect mask: write whiteMask (1s where white, 0s where black). Outside
-      // the rect mask: leave the framebuffer untouched.
       uint8_t* row = target + static_cast<int32_t>(py - originY) * panelStride;
+      switch (mode) {
+        case DitherMode::PreserveInk:
+          for (int byte = byteStart; byte <= byteEnd; ++byte) {
+            uint8_t mask = blackMask;
+            if (byte == byteStart) mask &= headMask;
+            if (byte == byteEnd) mask &= tailMask;
+            row[byte] &= static_cast<uint8_t>(~mask);
+          }
+          continue;
+        case DitherMode::Replace:
+          break;
+      }
+
+      // Replace writes both inks inside the rectangle and leaves other pixels untouched.
       if (byteStart == byteEnd) {
         const uint8_t rectMask = headMask & tailMask;
         row[byteStart] = static_cast<uint8_t>((row[byteStart] & ~rectMask) | (rectMask & whiteMask));
@@ -1761,10 +1879,10 @@ void GfxRenderer::fillRectImpl(const int x, const int y, const int width, const 
   }
 }
 
-template void GfxRenderer::fillRectImpl<Color::Black>(int, int, int, int) const;
-template void GfxRenderer::fillRectImpl<Color::White>(int, int, int, int) const;
-template void GfxRenderer::fillRectImpl<Color::LightGray>(int, int, int, int) const;
-template void GfxRenderer::fillRectImpl<Color::DarkGray>(int, int, int, int) const;
+template void GfxRenderer::fillRectImpl<Color::Black>(int, int, int, int, DitherMode) const;
+template void GfxRenderer::fillRectImpl<Color::White>(int, int, int, int, DitherMode) const;
+template void GfxRenderer::fillRectImpl<Color::LightGray>(int, int, int, int, DitherMode) const;
+template void GfxRenderer::fillRectImpl<Color::DarkGray>(int, int, int, int, DitherMode) const;
 
 void GfxRenderer::maskRoundedRectOutsideCorners(const int x, const int y, const int width, const int height,
                                                 const int radius, const Color color) const {
@@ -1918,16 +2036,17 @@ void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, co
   int rotatedY = 0;
   rotateCoordinates(orientation, x, y, &rotatedX, &rotatedY, panelWidth, panelHeight);
   // Rotate origin corner
+  // The bitmap is unrotated, so use its physical blit dimensions.
   switch (orientation) {
     case Portrait:
-      rotatedY = rotatedY - height;
+      rotatedY -= height - 1;
       break;
     case PortraitInverted:
-      rotatedX = rotatedX - width;
+      rotatedX -= width - 1;
       break;
     case LandscapeClockwise:
-      rotatedY = rotatedY - height;
-      rotatedX = rotatedX - width;
+      rotatedY -= height - 1;
+      rotatedX -= width - 1;
       break;
     case LandscapeCounterClockwise:
       break;
@@ -2033,7 +2152,11 @@ bool GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
     }
     screenY += y;  // the offset should not be scaled
     if (screenY >= getScreenHeight()) {
-      break;
+      // Top-down: every later row is lower still. Bottom-up: later rows move up
+      // onto the screen, so consume this one and keep going.
+      if (bitmap.isTopDown()) break;
+      if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) return false;
+      continue;
     }
 
     if (bitmap.readNextRow(outputRow, rowBytes) != BmpReaderError::Ok) {
@@ -2422,6 +2545,16 @@ HalDisplay::RefreshMode GfxRenderer::applyPromotedRefresh(const HalDisplay::Refr
   return promotedRefresh_;
 }
 
+HalDisplay::RefreshMode GfxRenderer::applyFastCleanup(const HalDisplay::RefreshMode refreshMode) const {
+  if (refreshMode != HalDisplay::FAST_REFRESH) {
+    fastSinceClean_ = 0;
+    return refreshMode;
+  }
+  if (fastCleanupEvery_ == 0 || ++fastSinceClean_ < fastCleanupEvery_) return refreshMode;
+  fastSinceClean_ = 0;
+  return HalDisplay::HALF_REFRESH;
+}
+
 void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode) const {
   if (frameTimed) {
     LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", millis() - start_ms);
@@ -2429,7 +2562,7 @@ void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode) const {
   }
   // Residue is tracked against the mode the panel actually runs, not the one the caller asked
   // for -- a promotion to HALF/FULL scrubs just as well as a direct one.
-  refreshMode = applyPromotedRefresh(refreshMode);
+  refreshMode = applyFastCleanup(applyPromotedRefresh(refreshMode));
   panelResidue_ = refreshMode == HalDisplay::FAST_REFRESH;
   // A HALF/FULL pass drives every pixel to its target, which re-establishes the B/W baseline in
   // the controller's RED RAM. A FAST pass does not, so a gray plane sitting there survives it.
@@ -2438,7 +2571,7 @@ void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode) const {
 }
 
 void GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode refreshMode) const {
-  refreshMode = applyPromotedRefresh(refreshMode);
+  refreshMode = applyFastCleanup(applyPromotedRefresh(refreshMode));
   panelResidue_ = refreshMode == HalDisplay::FAST_REFRESH;
   if (refreshMode != HalDisplay::FAST_REFRESH) grayPlanesResident_ = false;
   // The async path has no turn-off-screen hook, which the sunlight fading fix
@@ -3117,6 +3250,8 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     // font-native position. Fonts without their glyphs — the built-ins — miss
     // the getGlyph lookup and skip them, as before.
     if (utf8IsCombiningMark(cp) || BidiUtils::isTransparentMark(cp)) {
+      // getGlyph falls back to U+FFFD, which would be stamped over the base.
+      if (!font.hasCodepoint(cp, style)) continue;
       const EpdGlyph* combiningGlyph = font.getGlyph(cp, style);
       if (!combiningGlyph) continue;
       const auto anchor = combiningMark::anchorFor(cp);
@@ -3314,10 +3449,24 @@ static bool isSymmetricBracket(const uint32_t cp) {
   }
 }
 
+void GfxRenderer::drawTextRotated90CCWScaled(const int fontId, const int x, const int y, const char* text,
+                                             const uint16_t scale, const bool black,
+                                             const EpdFontFamily::Style style) const {
+  if (scale == 256) {
+    drawTextRotated90CCW(fontId, x, y, text, black, style);
+    return;
+  }
+  if (text == nullptr || *text == '\0') return;
+  FaceScale face = faceScaleFor(fontId);
+  face.own = static_cast<uint16_t>(face.own * scale / 256);
+  face.fallback = static_cast<uint16_t>(face.fallback * scale / 256);
+  drawTextRotatedScaled(fontId, x, y, text, black, style, /*clockwise=*/false, face);
+}
+
 void GfxRenderer::drawCharVerticalRotatedInCell(const int fontId, const int cellLeftX, const int cellTopY,
                                                 const int cellSize, const uint32_t cp, const int shiftType,
                                                 const bool black, const EpdFontFamily::Style style, int* inkTopOut,
-                                                int* inkHeightOut) const {
+                                                int* inkHeightOut, const uint16_t scale) const {
   // Ellipsis glyphs are often horizontally designed and become too tall/ink-heavy
   // when rotated from proportional fonts. Render a centered vertical dot stack
   // directly in the cell to keep stable spacing and avoid overlaps.
@@ -3358,8 +3507,11 @@ void GfxRenderer::drawCharVerticalRotatedInCell(const int fontId, const int cell
   // or a ruby annotation's rotated glyph is drawn twice the size of the text around it.
   const bool scaledStyle = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0;
   // After CCW rotation, glyph height maps to X extent and glyph width maps to Y extent.
-  const int rotatedW = scaledStyle ? (glyph->height + 1) / 2 : glyph->height;
-  const int rotatedH = scaledStyle ? (glyph->width + 1) / 2 : glyph->width;
+  const bool sized = !scaledStyle && scale != 256;  // drawn at a CSS font-size
+  const int rotatedW = scaledStyle ? (glyph->height + 1) / 2
+                       : sized     ? scalePositive(glyph->height, scale)
+                                   : glyph->height;
+  const int rotatedH = scaledStyle ? (glyph->width + 1) / 2 : sized ? scalePositive(glyph->width, scale) : glyph->width;
 
   // Centre the rotated ink box in the cell -- the same rule the upright glyphs follow, so
   // punctuation lands on the column's axis by construction. Brackets override this below.
@@ -3420,6 +3572,12 @@ void GfxRenderer::drawCharVerticalRotatedInCell(const int fontId, const int cell
     renderCharScaled<TextRotation::Rotated90CCW>(*this, renderMode, font, cp, cursorXs, cursorYs, black, style);
     return;
   }
+  if (sized) {
+    const int cursorXs = (drawX + rotatedW - 1) - scaleSigned(glyph->top, scale);
+    const int cursorYs = drawY - scaleSigned(glyph->left, scale);
+    renderCharAtScale<TextRotation::Rotated90CCW>(*this, renderMode, font, cp, cursorXs, cursorYs, black, style, scale);
+    return;
+  }
   const int cursorX = (drawX + rotatedW - 1) - glyph->top;
   const int cursorY = drawY - glyph->left;
 
@@ -3428,10 +3586,10 @@ void GfxRenderer::drawCharVerticalRotatedInCell(const int fontId, const int cell
 
 bool GfxRenderer::verticalPunctInkBox(const int fontId, const uint32_t cp, const EpdFontFamily::Style style,
                                       const int cellTopY, const int cellSize, const int shiftType, int* inkTop,
-                                      int* inkHeight) const {
+                                      int* inkHeight, const uint16_t scale) const {
   if (!inkTop || !inkHeight) return false;
   *inkTop = INT32_MIN;
-  drawCharVerticalRotatedInCell(fontId, 0, cellTopY, cellSize, cp, shiftType, true, style, inkTop, inkHeight);
+  drawCharVerticalRotatedInCell(fontId, 0, cellTopY, cellSize, cp, shiftType, true, style, inkTop, inkHeight, scale);
   if (*inkTop == INT32_MIN) return false;  // no glyph / font missing
   // The box the drawer itself reports: VerticalTextBlock places every shape where
   // drawCharVerticalRotatedInCell does, with no drop of its own to mirror here.
@@ -3467,6 +3625,17 @@ bool GfxRenderer::displayGrayscaleBase(HalDisplay::GrayscaleMode mode, HalDispla
   panelResidue_ = true;
   grayPlanesResident_ = true;
   return true;
+}
+
+bool GfxRenderer::displayRetainedGrayscaleOverlay(int x, int y, int width, int height, bool restore) const {
+  if (x < 0 || y < 0 || width <= 0 || height <= 0 || x >= getScreenWidth() || y >= getScreenHeight() ||
+      width > getScreenWidth() - x || height > getScreenHeight() - y)
+    return false;
+  int ax, ay, bx, by;
+  rotateCoordinates(orientation, x, y, &ax, &ay, panelWidth, panelHeight);
+  rotateCoordinates(orientation, x + width - 1, y + height - 1, &bx, &by, panelWidth, panelHeight);
+  const int x0 = std::min(ax, bx), y0 = std::min(ay, by);
+  return display.displayRetainedGrayscaleOverlay(x0, y0, std::abs(ax - bx) + 1, std::abs(ay - by) + 1, restore);
 }
 
 void GfxRenderer::preconditionGrayscale() const { display.preconditionGrayscale(); }
@@ -3736,10 +3905,11 @@ void GfxRenderer::drawTextRotatedScaled(const int fontId, const int x, const int
     }
     const int offset = static_cast<int>((pen256 + 128) / 256);
     if (clockwise) {
-      renderCharAtScale<TextRotation::Rotated90CW>(*this, renderMode, font, cp, x, y - offset, black, style, prevScale);
+      drawGlyphAtScale<TextRotation::Rotated90CW>(*this, renderMode, fontId, font, cp, x, y - offset, black, style,
+                                                  prevScale);
     } else {
-      renderCharAtScale<TextRotation::Rotated90CCW>(*this, renderMode, font, cp, x, y + offset, black, style,
-                                                    prevScale);
+      drawGlyphAtScale<TextRotation::Rotated90CCW>(*this, renderMode, fontId, font, cp, x, y + offset, black, style,
+                                                   prevScale);
     }
     prevCp = cp;
   }

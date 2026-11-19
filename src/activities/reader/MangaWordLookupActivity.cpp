@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <DictIndex.h>
 #include <FontCacheManager.h>
+#include <Furigana.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -17,8 +18,10 @@
 #include "CrossPointSettings.h"
 #include "DefinitionTextRenderer.h"
 #include "DictSourceNames.h"
+#include "DictionaryDefinitionActivity.h"
+#include "HapticFeedback.h"
+#include "JapaneseNestedLookup.h"
 #include "MappedInputManager.h"
-#include "PanelTouch.h"
 #include "ReaderUtils.h"
 #include "components/DictionaryPanel.h"
 #include "components/UITheme.h"
@@ -141,7 +144,7 @@ void MangaWordLookupActivity::onExit() {
     RenderLock lock;
     sdFontSystem.releaseWordLookupFallback(renderer);
   }
-  BookStats::addCounts(mining_.bookPath.c_str(), static_cast<uint32_t>(countedLookups_.size()), 0);
+  lookupCounter.flush(mining_.bookPath);
   Activity::onExit();
 }
 
@@ -167,33 +170,82 @@ std::string MangaWordLookupActivity::miningSentence() const {
   return sentencemining::sentenceHtml(before, word, after);
 }
 
-void MangaWordLookupActivity::saveSentence() {
-  if (!hasResult) return;
-  sentencemining::Card card;
-  card.word = resultHeadword;
-  card.reading = resultReading;
-  card.sentence = miningSentence();
-  std::string definition = resultGrammar.empty() ? std::string() : resultGrammar + "\n";
-  definition += sentencemining::capUtf8(resultDefinition, sentencemining::MAX_DEFINITION_BYTES);
-  card.definition = sentencemining::definitionHtml(definition);
-  card.book = mining_.bookTitle;
-  card.author = mining_.bookAuthor;
-  card.date = sentencemining::today();
+// The result as one panel entry, with the card a save from the panel writes.
+bool MangaWordLookupActivity::resultEntries(std::vector<DictionaryDefinitionActivity::Entry>& out) {
+  out.clear();
+  if (!hasResult) return false;
+  DictionaryDefinitionActivity::Entry entry;
+  entry.headword = resultHeadword;
+  entry.definition = std::move(resultDefinition);  // the panel shows it; a step looks the next word up anew
+  entry.reading = resultReading;
+  entry.grammar = resultGrammar;
+  entry.definitionText = true;
+  if (resultSource != nullptr) entry.kind = dictsource::kind(resultDict);
   const std::string_view label = dictionaryLabel() ? dictionaryLabel() : "";
-  card.dictionary = std::string(label.substr(0, label.find(" | ")));
+  entry.dictName = std::string(label);
+  auto& draft = entry.draft;
+  draft.card.word = resultHeadword;
+  draft.card.reading = resultReading;
+  if (furigana::matchesReading(resultFurigana, resultReading)) draft.card.furigana = resultFurigana;
+  draft.card.sentence = miningSentence();
+  draft.card.book = mining_.bookTitle;
+  draft.card.author = mining_.bookAuthor;
+  draft.card.dictionary = std::string(label.substr(0, label.find(" | ")));
   // Filed under the comic's language. Folders converted before the tool recorded one are
   // Japanese manga, which is what they were made for.
-  std::string language = sentencemining::languageForDictionary("", mining_.bookLanguage);
-  if (language.empty()) language = sentencemining::JAPANESE;
-  const auto result =
-      miningFeedback_.saved() ? sentencemining::SaveResult::AlreadySaved : sentencemining::saveOnce(card, language);
-  if (result == sentencemining::SaveResult::Saved) BookStats::addCounts(mining_.bookPath.c_str(), 0, 1);
-  miningFeedback_.record(result != sentencemining::SaveResult::Failed, millis());
-  requestUpdate();
+  draft.language = sentencemining::languageForDictionary("", mining_.bookLanguage);
+  if (draft.language.empty()) draft.language = sentencemining::JAPANESE;
+  draft.bookPath = mining_.bookPath;
+  out.reserve(1);
+  out.push_back(std::move(entry));
+  return true;
+}
+
+bool MangaWordLookupActivity::stepWord(void* ctx, const int direction,
+                                       std::vector<DictionaryDefinitionActivity::Entry>& out) {
+  auto* self = static_cast<MangaWordLookupActivity*>(ctx);
+  const int from = self->cursorIndex;
+  self->moveCursor(direction);
+  // A word that could not be read (low memory) leaves the panel on the word it shows: so does
+  // the cursor, or the next step would start from a word the reader never saw.
+  if (!self->resultEntries(out)) {
+    self->cursorIndex = from;
+    return false;
+  }
+  return true;
+}
+
+// The page keeps being mapped while the panel is up, so the cursor can cycle and the scan cache
+// gets written on exit.
+bool MangaWordLookupActivity::scanTick(void* ctx) {
+  auto* self = static_cast<MangaWordLookupActivity*>(ctx);
+  if (!self->scan.isDone() && self->scan.step(40)) DictIndex::logAndResetStats("progressive scan complete");
+  return !self->scan.isDone();
+}
+
+// The entry opens in the shared definition panel; this activity keeps the page's word cursor
+// behind it, which the panel steps through when it reads on past the entry.
+void MangaWordLookupActivity::openPanel() {
+  std::vector<DictionaryDefinitionActivity::Entry> entries;
+  if (!resultEntries(entries)) return;
+  auto panel = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(entries));
+  if (!panel) {
+    LOG_ERR("MWLA", "OOM: definition panel");
+    panelFailed = true;  // shown as low memory until Confirm retries
+    requestUpdate();
+    return;
+  }
+  panelOpen = true;
+  panel->setHostTick({this, &MangaWordLookupActivity::scanTick});
+  panel->setWordSteps({this, &MangaWordLookupActivity::stepWord});
+  panel->setNestedLookup({nullptr, &japanese_nested::lookup});
+  panel->setPageTurnReversed(pageTurnReversed);
+  if (SETTINGS.vocabularyHistoryEnabled) panel->setVocabulary(vocabularyContext(mining_));
+  // Back, a tap outside and the power click all return to the comic.
+  startActivityForResult(std::move(panel), [this](const ActivityResult&) { finishCancelled(); });
 }
 
 void MangaWordLookupActivity::moveCursor(int delta) {
-  miningFeedback_.clear();
   // Moving past the last already-discovered word while the background scan is still running:
   // scan forward just enough to reveal the next one (see EpubReaderWordLookupActivity).
   if (delta > 0 && !scan.isDone() && cursorIndex + delta >= static_cast<int>(scan.selectableGlyphs.size())) {
@@ -239,7 +291,6 @@ std::string MangaWordLookupActivity::buildLookupText(size_t startIdx) const {
 }
 
 void MangaWordLookupActivity::performLookup() {
-  miningFeedback_.clear();
   // Serialize against the render task, which reads the result strings concurrently -- see
   // EpubReaderWordLookupActivity::performLookup() for the confirmed tear/abort.
   RenderLock lock;
@@ -256,7 +307,7 @@ void MangaWordLookupActivity::performLookup() {
   // Render shows "Loading..." instead of "No match found" while this runs (fast navigation).
   lookupInFlight = true;
   performLookupImpl();
-  countLookup();
+  if (hasResult) lookupCounter.count(resultHeadword);
   lookupInFlight = false;
 }
 
@@ -274,11 +325,10 @@ void MangaWordLookupActivity::performLookupImpl() {
   resultDict = 0;
   resultDefinition.clear();
   resultReading.clear();
+  resultFurigana.clear();
   resultGrammar.clear();
   resultDictionaryLabel.clear();
   resultMatchLen = 0;
-  scrollOffset = 0;
-  totalLines = 9999;
 
   std::string text = buildLookupText(static_cast<size_t>(cursorIndex));
   if (text.empty()) return;
@@ -316,6 +366,7 @@ void MangaWordLookupActivity::performLookupImpl() {
     DefinitionText::EntryMetadata metadata;
     DefinitionText::extractEntryMetadata(resultDefinition, resultHeadword, metadata);
     resultReading = std::move(metadata.reading);
+    resultFurigana = std::move(metadata.furigana);
     resultGrammar = std::move(metadata.grammar);
     resultDict = result.entry.sourceDict;
     resultSource = dictsource::name(resultDict);
@@ -375,6 +426,7 @@ void MangaWordLookupActivity::performLookupImpl() {
           DefinitionText::EntryMetadata grammarMetadata;
           DefinitionText::extractEntryMetadata(resultDefinition, resultHeadword, grammarMetadata);
           resultReading = std::move(grammarMetadata.reading);
+          resultFurigana = std::move(grammarMetadata.furigana);
           resultGrammar = std::move(grammarMetadata.grammar);
           resultDictionaryLabel = std::move(grammarMetadata.source);
           resultDict = DictIndex::DICT_GRAMMAR;
@@ -455,87 +507,18 @@ void MangaWordLookupActivity::performLookupImpl() {
 }
 
 void MangaWordLookupActivity::loop() {
-  if (miningFeedback_.popupExpired(millis())) requestUpdate();
+  // Until a word is found: the page is still being mapped. Back leaves; Confirm or the side button
+  // bound to Word Lookup looks the word up again (no match, or a lookup the heap refused).
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) || ReaderUtils::wordLookupPowerClick(mappedInput)) {
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
+    finishCancelled();
     return;
   }
-
-  // With a definition showing, Select saves it for sentence mining; before that it looks up.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (hasResult) {
-      saveSentence();
-    } else {
-      performLookup();
-    }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || ReaderUtils::wordLookupSideToggle(mappedInput)) {
+    panelFailed = false;
+    performLookup();
+    requestUpdate();
     return;
   }
-
-  // A side button bound to Word Lookup mirrors the power-button shortcut: the click that opened
-  // this screen looks the highlighted word up, and only a click with a definition already showing
-  // leaves. Two clicks in, one click out. This view draws the cursor and the definition together,
-  // so "a definition is showing" IS hasResult -- the same thing Confirm produces above.
-  if (ReaderUtils::wordLookupSideToggle(mappedInput)) {
-    if (!hasResult) {
-      performLookup();
-      return;
-    }
-    ActivityResult result;
-    result.isCancelled = true;
-    setResult(std::move(result));
-    finish();
-    return;
-  }
-  // Remapped page bindings (side buttons and the power button) move the word cursor here.
-  const auto step = ReaderUtils::lookupPanelStep(mappedInput);
-  if (step != ReaderUtils::PanelStep::None) {
-    moveCursor(step == ReaderUtils::PanelStep::Next ? 1 : -1);
-    return;
-  }
-
-  // The gestures every floating panel answers, read in one place (PanelTouch): a tap outside the
-  // card puts it away, up/down swipes read on like a button press, and a page turn skips to the
-  // previous/next word like a hold.
-  switch (const auto touch = PanelTouch::read(renderer, mappedInput, hasResult, pageTurnReversed)) {
-    case PanelTouch::Action::Close: {
-      ActivityResult result;
-      result.isCancelled = true;
-      setResult(std::move(result));
-      finish();
-      return;
-    }
-    case PanelTouch::Action::AddButton:
-      saveSentence();
-      return;
-    case PanelTouch::Action::ScrollDown:
-    case PanelTouch::Action::ScrollUp:
-      readOn(touch == PanelTouch::Action::ScrollDown ? 1 : -1);
-      return;
-    case PanelTouch::Action::Next:
-    case PanelTouch::Action::Previous:
-      moveCursor(touch == PanelTouch::Action::Next ? 1 : -1);
-      return;
-    case PanelTouch::Action::None:
-      break;
-  }
-
-  // Every pair reads the same way, as in the book's lookup panel: a press reads on through the
-  // definition and onto the next word at its end; a hold skips to the next word.
-  int delta = 0;
-  switch (ReaderUtils::lookupPressAny(mappedInput, delta)) {
-    case ReaderUtils::LookupPress::Press:
-      readOn(delta);
-      break;
-    case ReaderUtils::LookupPress::Hold:
-      moveCursor(delta);
-      break;
-    case ReaderUtils::LookupPress::None:
-      break;
-  }
-
   // Progressive background scan + one-time result persistence -- same structure as
   // EpubReaderWordLookupActivity::loop(), see there for the full rationale.
   if (!scan.isDone()) {
@@ -549,121 +532,25 @@ void MangaWordLookupActivity::loop() {
       requestUpdate();
     }
   }
+  if (hasResult && !panelOpen && !panelFailed) openPanel();
 }
 
-void MangaWordLookupActivity::readOn(const int delta) {
-  const int target = std::clamp(scrollOffset + delta * std::max(1, visibleCapacity), 0, maxScroll);
-  if (hasResult && target != scrollOffset) {
-    scrollOffset = target;
-    requestUpdate();
-    return;
-  }
-  moveCursor(delta);
-}
-
-void MangaWordLookupActivity::renderContentArea(const Rect& body) {
-  // Built-in font on purpose, NOT SETTINGS.getReaderFontId(): the lookup panel's definitions
-  // and UI already render in built-in fonts, so an SD reader font (e.g. UD Digi Kyokasho) made
-  // the headword a different typeface than the rest of the view -- and pulled whole SD font
-  // groups (16KB decompression buffers each) into a heap that is already at its tightest here.
-  const int defFont = DefinitionText::wordLookupFontId();
-  const uint16_t defScale = DefinitionText::wordLookupFontScale();
-  sdFontSystem.ensureWordLookupFallback(renderer, defFont, DefinitionText::wordLookupFontPointSize());
-
-  // Bulk-load every glyph the headword + definition need before drawing/measuring any of them.
-  // Without this, each drawText()/getTextWidth() call for a character that isn't already cached
-  // falls through the slow one-by-one fallback path -- confirmed on a real device as 12-18 SECOND
-  // render times for a single Word Lookup screen (same root cause as the vertical-page-turn
-  // slowness fixed earlier: dictionary definitions merge up to 5 entries and can run to hundreds
-  // of characters spanning many different compressed font groups, each a cache miss without this).
-  if (hasResult) {
-    if (auto* fcm = renderer.getFontCacheManager()) {
-      fcm->clearCache();
-      // Regular plus the exact bold lines use at most the compressed font's four page slots.
-      // Italic Latin translations are cheap to load on demand.
-      DefinitionText::prewarmStyledText(renderer, defFont, resultDefinition);
-    }
-  }
-
-  if (scan.selectableGlyphs.empty() || !hasResult) {
-    const bool stillWorking = lookupInFlight || !scan.isDone();
-    UITheme::drawCenteredText(renderer, body, UI_12_FONT_ID, body.y + body.height / 2,
-                              stillWorking ? tr(STR_LOADING) : tr(STR_NO_MATCH), true);
-    return;
-  }
-
-  DefinitionText::EntryMetadata metadata{resultReading, resultGrammar};
-  const int defLineH = renderer.getLineHeightScaled(defFont, defScale);
-  const int metadataLines = DefinitionText::entryMetadataLineCount(renderer, body, defFont, defScale, metadata);
-  const int definitionScroll = std::max(0, scrollOffset - metadataLines);
-  Rect definitionBody = body;
-  const int metadataEndY =
-      DefinitionText::drawEntryMetadata(renderer, body, defFont, defScale, metadata, scrollOffset, defLineH);
-  definitionBody.y = metadataEndY - std::min(scrollOffset, metadataLines) * defLineH;
-  definitionBody.height = std::max(0, body.y + body.height - definitionBody.y);
-
-  const int maxWidth = definitionBody.width;
-  const int textX = definitionBody.x;
-  const int defY = definitionBody.y;
-
-  const int maxDefY = definitionBody.y + definitionBody.height;
-  const auto wrap = DefinitionText::drawWrapped(renderer, defFont, resultDefinition, textX, defY, defLineH, maxWidth,
-                                                maxDefY, definitionScroll, defScale);
-
-  totalLines = metadataLines + wrap.totalLines;
-  visibleCapacity = std::max(1, body.height / defLineH);
-  maxScroll = std::max(0, totalLines - visibleCapacity);
-}
-
+// Shown only until the first word is found: the entry itself opens in the definition panel.
 void MangaWordLookupActivity::render(RenderLock&&) {
-  // Manga keeps the free-scrolling definition, so the counter stays the word position within
-  // the page (35/50); its total is unknown until the progressive scan finishes.
-  std::string counterText;
-  if (hasResult && !scan.selectableGlyphs.empty()) {
-    counterText = std::to_string(cursorIndex + 1) + "/" +
-                  (scan.isDone() ? std::to_string(scan.selectableGlyphs.size()) : std::string("\xe2\x80\xa6"));
-  }
-
-  if (hasResult) {
-    constexpr int kPanelHeaderFont = NOTOSERIF_12_FONT_ID;
-    sdFontSystem.ensureWordLookupFallback(renderer, kPanelHeaderFont, 12);
-    if (auto* fcm = renderer.getFontCacheManager()) {
-      fcm->clearCache();
-      renderer.prewarmText(kPanelHeaderFont, resultHeadword.c_str(), 1 << EpdFontFamily::BOLD);
-    }
-  }
-
-  // The panel is opaque and always covers the same rectangle, so a re-render overwrites the
-  // previous one; the manga page stays visible around it instead of being cleared away.
-  const char* kind = resultSource == nullptr ? nullptr : I18N.get(dictsource::kind(resultDict));
-  const auto layout = DictionaryPanel::draw(renderer, hasResult ? resultHeadword.c_str() : "", dictionaryLabel(),
-                                            counterText.empty() ? nullptr : counterText.c_str(), kind,
-                                            hasResult && mappedInput.hasTouch(), hasResult && miningFeedback_.saved());
-  renderContentArea(layout.body);
-  DictionaryPanel::drawPopup(renderer, layout, miningFeedback_.popupText(millis()));
-
-  // Directional labels for the same reason as the EPUB lookup panel: the hint must name the
-  // direction on the rotated screen, which a fixed left/right pair cannot do.
-  const auto labels =
-      mappedInput.mapDirectionalLabels(tr(STR_BACK),
-                                       !hasResult                ? tr(STR_SELECT)
-                                       : miningFeedback_.saved() ? tr(STR_MINING_SAVED)
-                                                                 : tr(STR_MINING_SAVE),
-                                       tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // A found word opens in the panel on the next tick; drawing this placeholder first flashed an
+  // empty "No match found" panel for one refresh.
+  if (hasResult && !panelFailed) return;
+  const auto layout = DictionaryPanel::draw(renderer, "", nullptr, nullptr, nullptr, false, false);
+  const bool stillWorking = lookupInFlight || !scan.isDone();
+  UITheme::drawCenteredText(renderer, layout.body, UI_12_FONT_ID, layout.body.y + layout.body.height / 2,
+                            stillWorking  ? tr(STR_LOADING)
+                            : panelFailed ? tr(STR_LOW_MEMORY_RETRY)
+                                          : tr(STR_NO_MATCH),
+                            true);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), stillWorking ? "" : tr(STR_SELECT), "", "");
   DictionaryPanel::clearButtonHints(renderer);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  // FAST only, the first render included. The framebuffer holds just the page's BW plane -- its
-  // grays exist only on the glass -- so a full or half refresh would repaint the whole manga page
-  // from that plane: a black flash, then the image in a different tone. A FAST wave drives only the
-  // pixels that change, the panel's, and leaves the page around it as it was.
+  // FAST only: the framebuffer holds just the page's BW plane, so a full refresh would flash the
+  // whole manga page; a FAST wave drives only the panel's pixels.
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-}
-
-void MangaWordLookupActivity::countLookup() {
-  if (!hasResult || resultHeadword.empty() || countedLookups_.size() >= MAX_COUNTED_LOOKUPS) return;
-  const auto hash = static_cast<uint32_t>(std::hash<std::string>{}(resultHeadword));
-  if (std::find(countedLookups_.begin(), countedLookups_.end(), hash) != countedLookups_.end()) return;
-  if (countedLookups_.empty()) countedLookups_.reserve(32);
-  countedLookups_.push_back(hash);
 }

@@ -39,7 +39,7 @@ Three ways to start a lookup while reading:
   on first. A press that lands between words opens ordinary word selection instead, so the gesture is never a dead
   end. Closing a definition opened this way returns to the page.
 - Open the reader menu (**Confirm**) and choose **Look Up**.
-- Or set **Settings → Controls → Long-press Menu** to "Dictionary", then hold **Confirm** (~0.4s) on the reading page.
+- Or set **Settings → Controls → Front buttons → Menu long press** to "Dictionary", then hold **Confirm** (~0.4s) on the reading page.
 
 ### Selecting Text
 
@@ -59,8 +59,8 @@ On the very first lookup with a dictionary (and again whenever the `.idx` or `.s
 
 ### How Lookup Works
 
-1. **Direct match** — the word or phrase is searched as-is (case-insensitive) in the dictionary index. Leading and trailing punctuation and whitespace are stripped automatically. Multi-word phrases match dictionary entries containing spaces (such as idioms, phrasal verbs, or compound terms).
-2. **Synonyms** — on a miss, if the dictionary ships a `.syn` file, alternate spellings and irregular forms recorded there are resolved to their headword (e.g. `oxen` → `ox`, `colour` → `color`). This step is skipped if the `.sidx` sidecar could not be built (e.g. transient low memory during indexing); the dictionary otherwise stays usable, and the build is retried the next time it is opened.
+1. **Direct match** — the word or phrase is searched as-is (case-insensitive) in the dictionary index. Leading and trailing punctuation and whitespace are stripped automatically. Hebrew niqqud and cantillation marks are removed from the search term so pointed text can match unpointed headwords. Basic Arabic vowel marks (U+064B–U+0650, U+0652) and superscript alef (U+0670) are also removed; shaddah, hamza, and maddah remain significant. Multi-word phrases match dictionary entries containing spaces (such as idioms, phrasal verbs, or compound terms).
+2. **Synonyms** — on a miss, if the dictionary ships a `.syn` file, alternate spellings and irregular forms recorded there are resolved to their headword (e.g. `oxen` → `ox`, `colour` → `color`). When one form belongs to several headwords (`went` → `go` and `wend`, よんで → 読む and 呼ぶ), each headword's entry is shown, in dictionary order, as its own page of the panel. This step is skipped if the `.sidx` sidecar could not be built (e.g. transient low memory during indexing); the dictionary otherwise stays usable, and the build is retried the next time it is opened.
 3. **Inflection** — still no match: word forms are retried automatically, using the rules for the book's language.
    - Accented capitals are folded first, in every language, so a word at the start of a sentence (`École`, `Être`, `Über`) reaches its lowercase headword.
    - **English**, and any language without its own rules: possessives and plurals (`dogs` → `dog`, `stories` → `story`) and verb endings (`walked` → `walk`, `running` → `run`, `making` → `make`).
@@ -68,6 +68,14 @@ On the very first lookup with a dictionary (and again whenever the `.idx` or `.s
 4. **Not found** — a short popup appears and you return to word selection.
 
 The rules are selected by the book's language tag, falling back to the language folder the dictionary sits in (`/dictionaries/fr/...`) for a book with no tag. They cover regular morphology only: irregular verbs that share no stem with their lemma (French `est`, `ont`, `fut`, `vais`), and a verb's irregular passé simple (French `connus`, `naquit`), are not rule-reachable and need a `.syn`, which resolves them in one step and works in any language.
+
+## Vocabulary History
+
+With **Reader Settings → Save Vocabulary Lookups** on, every successful lookup is appended to `/Vocabulary.txt` at the root of the SD card: StarDict lookups, Japanese and Chinese book lookups, manga lookups, and lookups made inside a definition. It is separate from sentence mining and from `My Clippings.txt`. Failed lookups are not recorded, and an SD-card write failure does not interrupt the dictionary.
+
+The file uses UTF-8 **JSON Lines**: one JSON object per line, versioned with `"v":1`, in the same layout as CrossPoint's vocabulary history. Each record has a random `id`, `word` (the word as the page shows it), `headword` (dictionary match), `definition` (plain text), and `timestamp` (Unix seconds, or `null` when the clock is unavailable). It also includes `title`, `author`, `series`, `series_index`, `chapter`, `page` (1-based chapter page), `spine` (0-based EPUB spine index), and `start_offset` (always `null`: the lookup screens do not track the word's source offset). `chapter` is the TOC entry of the spine item being read. Manga records leave `chapter` empty and `page` and `spine` at 0. A lookup made inside a definition records the book of the lookup it was opened from. Definitions are limited to 2 KiB, words and headwords to 160 UTF-8 bytes each, and book fields to bounded lengths; `definition_truncated` says whether the definition was shortened.
+
+One record is written per looked-up word: stepping to the next word or a selection that brings in more words adds a record for each word. Repeated lookups are recorded separately.
 
 ## The Definition Screen
 
@@ -88,6 +96,10 @@ Definitions are drawn in your reading font. Dictionaries may use IPA symbols (e.
 - **Touch** — the card pages the same way the reader itself is set to turn pages (**Settings → Controls → Touch
   Reader Controls**): tap zones, inverted zones, swipes, inverted swipes, or nothing at all when touch page turns
   are off. A tap outside the card puts it away.
+- **Long press on a word** (touch), or **hold Confirm** and pick a word with the page buttons — look that word up in
+  the same dictionaries. Its entry opens over this one; **Back** returns here, **hold Back** returns to the book.
+  In an entry opened this way a short **Confirm** starts the cursor too. Up to 8 entries can be open at once; on the
+  X4 and X3, which have less memory, one entry over the first.
 
 
 

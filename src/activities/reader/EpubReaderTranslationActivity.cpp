@@ -14,13 +14,14 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
-#include "PanelTouch.h"
+#include "PanelInput.h"
 #include "SilentRestart.h"
 #include "WifiCredentialStore.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/DictionaryPanel.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/GeminiConfig.h"
 
 namespace {
 
@@ -50,8 +51,7 @@ constexpr uint32_t WIFI_STACK_RESERVE = 36000;
 // no public API to ask ESP-IDF's WiFi driver "do you have enough heap", so this margin is a
 // conservative empirical floor above the crash point, not a documented ESP-IDF constant.
 constexpr uint32_t MIN_HEAP_FOR_WIFI_INIT = 70000;
-static std::string apiKeyPath() { return sdsystem::findUserFile("gemini.key"); }
-constexpr const char* GEMINI_MODEL = "gemini-3.8-flash";
+
 // The page behind the panel, kept across the full-screen Wi-Fi list and a silent restart.
 static std::string backgroundPath() { return sdsystem::path("translate_bg.bin"); }
 // A saved network either answers within this or is out of range; the Wi-Fi list takes over then.
@@ -240,42 +240,7 @@ void EpubReaderTranslationActivity::onExit() {
   }
 }
 
-bool EpubReaderTranslationActivity::readApiKey(std::string& keyOut) {
-  // 192, not 256: the stack budget for a local is under 256 bytes (CLAUDE.md), and this is
-  // still more than three times the longest key Google issues (a current AI Studio key is ~53
-  // characters, the older AIza form 39).
-  char buf[192];
-  size_t len = Storage.readFileToBuffer(apiKeyPath().c_str(), buf, sizeof(buf));
-  if (len == 0) return false;
-  // readFileToBuffer stops at bufferSize-1 and reports the truncated length, so a key longer
-  // than the buffer arrives silently cut in half and is rejected by the API as malformed. A
-  // full buffer now means "this is not a key" rather than "here is most of one".
-  if (len >= sizeof(buf) - 1) {
-    LOG_ERR("XLAT", "gemini.key is %u+ bytes; that is not an API key", static_cast<unsigned>(len));
-    return false;
-  }
-
-  size_t start = 0;
-  // A UTF-8 BOM is what an editor on Windows writes when the file is saved as UTF-8, and the
-  // documented way to install a key is to paste it into a text file. The three bytes go out in
-  // front of the key, the API rejects it, and nothing on screen suggests the file is at fault.
-  if (len - start >= 3 && static_cast<unsigned char>(buf[start]) == 0xEF &&
-      static_cast<unsigned char>(buf[start + 1]) == 0xBB && static_cast<unsigned char>(buf[start + 2]) == 0xBF) {
-    start += 3;
-  }
-  // Trim whitespace/newlines from BOTH ends: a leading space or newline corrupts the key exactly
-  // as invisibly as a trailing one, and only the trailing end was handled.
-  while (start < len && (buf[start] == '\n' || buf[start] == '\r' || buf[start] == ' ' || buf[start] == '\t')) {
-    start++;
-  }
-  while (len > start && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ' || buf[len - 1] == '\t')) {
-    len--;
-  }
-  if (len <= start) return false;
-
-  keyOut.assign(buf + start, len - start);
-  return true;
-}
+bool EpubReaderTranslationActivity::readApiKey(std::string& keyOut) { return gemini::readKey(keyOut); }
 
 // What the screen says when Google refuses the request. The status alone separates the causes a
 // reader can actually act on -- a rejected key, an account with no billing set up, a quota that
@@ -309,9 +274,12 @@ static std::string translationHttpError(const int httpCode) {
   return msg;
 }
 
-bool EpubReaderTranslationActivity::callGeminiApi(const std::string& apiKey) {
+// One request to one model. Returns the HTTP status (negative when no connection), the body in
+// response.
+int EpubReaderTranslationActivity::postToModel(const std::string& apiKey, const std::string& model,
+                                               std::string& response) {
   std::string url = "https://generativelanguage.googleapis.com/v1beta/models/";
-  url += GEMINI_MODEL;
+  url += model;
   url += ":generateContent?key=";
   url += apiKey;
   // Only the translated text. The full reply also carries the model's thought signature and
@@ -320,6 +288,46 @@ bool EpubReaderTranslationActivity::callGeminiApi(const std::string& apiKey) {
   // ran out of contiguous heap and aborted.
   url += "&$fields=candidates.content.parts.text";
 
+  JsonDocument reqDoc;
+  auto contents = reqDoc["contents"].to<JsonArray>();
+  auto part = contents.add<JsonObject>();
+  auto parts = part["parts"].to<JsonArray>();
+  auto textPart = parts.add<JsonObject>();
+  std::string prompt = "Translate the following text to ";
+  prompt += gemini::targetLanguageName(SETTINGS.translationTarget);
+  prompt += ". Return only the translation, no commentary.\n\n";
+  prompt += sourceText;
+  textPart["text"] = prompt;
+
+  auto config = reqDoc["generationConfig"].to<JsonObject>();
+  config["maxOutputTokens"] = 2048;
+  // The model thinks before answering, and those tokens count against maxOutputTokens: at its
+  // default level a long page could use up the budget and return no translation, or outlast the
+  // timeout below. A translation needs little reasoning; "low" is the lowest level Gemini 3
+  // accepts. Older models take no thinkingLevel and reject a request that names one.
+  if (model.rfind("gemini-3", 0) == 0) config["thinkingConfig"].to<JsonObject>()["thinkingLevel"] = "low";
+
+  std::string body;
+  serializeJson(reqDoc, body);
+
+  freeink::SecureHttpClient http;
+  http.setInsecure();  // same as KOReaderSync: the wolfSSL transport has no CA bundle wired up
+  http.setTimeout(30000);
+  if (!http.begin(url)) {
+    LOG_ERR("XLAT", "Failed to open connection");
+    return -1;
+  }
+  http.addHeader("Content-Type", "application/json");
+
+  const int httpCode = http.POST(body);
+  response = http.getString();
+  http.end();
+
+  LOG_DBG("XLAT", "%s: HTTP %d (%u bytes)", model.c_str(), httpCode, static_cast<unsigned>(response.size()));
+  return httpCode;
+}
+
+bool EpubReaderTranslationActivity::callGeminiApi(const std::string& apiKey) {
   // TLS/HTTP client init needs one large *contiguous* buffer (record buffers, X.509 parsing,
   // etc.), so the gate must check the largest allocatable block, not total free heap -- on a
   // fragmented heap (e.g. after CJK font/vertical-text work, which this session found leaves the
@@ -352,41 +360,24 @@ bool EpubReaderTranslationActivity::callGeminiApi(const std::string& apiKey) {
     return false;
   }
 
-  JsonDocument reqDoc;
-  auto contents = reqDoc["contents"].to<JsonArray>();
-  auto part = contents.add<JsonObject>();
-  auto parts = part["parts"].to<JsonArray>();
-  auto textPart = parts.add<JsonObject>();
-  textPart["text"] = std::string(
-                         "Translate the following text to English. "
-                         "Return only the translation, no commentary.\n\n") +
-                     sourceText;
-
-  auto config = reqDoc["generationConfig"].to<JsonObject>();
-  config["maxOutputTokens"] = 2048;
-  // The model thinks before answering, and those tokens count against maxOutputTokens: at its
-  // default level a long page could use up the budget and return no translation, or outlast the
-  // timeout below. A translation needs little reasoning; "low" is the lowest level 3.8 accepts.
-  config["thinkingConfig"].to<JsonObject>()["thinkingLevel"] = "low";
-
-  std::string body;
-  serializeJson(reqDoc, body);
-
-  freeink::SecureHttpClient http;
-  http.setInsecure();  // same as KOReaderSync: the wolfSSL transport has no CA bundle wired up
-  http.setTimeout(30000);
-  if (!http.begin(url)) {
-    LOG_ERR("XLAT", "Failed to open connection");
-    errorMessage = tr(STR_TRANSLATION_FAILED);
-    return false;
+  // The reader's own model first, then Matcha's, then the lighter fallback; each only when the one
+  // before is busy, out of quota or not offered to this key.
+  std::string models[3];
+  int modelCount = 0;
+  const std::string userModel = gemini::readModel();
+  if (!userModel.empty()) models[modelCount++] = userModel;
+  for (const char* model : {gemini::DEFAULT_MODEL, gemini::LITE_MODEL}) {
+    if (modelCount == 0 || models[0] != model) models[modelCount++] = model;
   }
-  http.addHeader("Content-Type", "application/json");
-
-  const int httpCode = http.POST(body);
-  const std::string response = http.getString();
-  http.end();
-
-  LOG_DBG("XLAT", "Gemini response: HTTP %d (%u bytes)", httpCode, static_cast<unsigned>(response.size()));
+  int httpCode = 0;
+  std::string response;
+  for (int i = 0; i < modelCount; ++i) {
+    httpCode = postToModel(apiKey, models[i], response);
+    if (httpCode == 200 && !response.empty()) break;
+    if (httpCode != 503 && httpCode != 429 && httpCode != 404) break;
+    if (i + 1 < modelCount)
+      LOG_INF("XLAT", "%s answered %d; trying %s", models[i].c_str(), httpCode, models[i + 1].c_str());
+  }
 
   if (httpCode != 200 || response.empty()) {
     LOG_ERR("XLAT", "API call failed: http=%d", httpCode);
@@ -448,12 +439,7 @@ void EpubReaderTranslationActivity::onWifiComplete(bool success) {
   requestUpdate();
 }
 
-void EpubReaderTranslationActivity::cancel() {
-  ActivityResult result;
-  result.isCancelled = true;
-  setResult(std::move(result));
-  finish();
-}
+void EpubReaderTranslationActivity::cancel() { finishCancelled(); }
 
 void EpubReaderTranslationActivity::stepPage(const int direction) {
   if (state != SHOWING_RESULT) return;
@@ -473,25 +459,26 @@ void EpubReaderTranslationActivity::loop() {
     return;
   }
 
-  switch (PanelTouch::read(renderer, mappedInput, false, pageTurnReversed)) {
-    case PanelTouch::Action::Close:
+  // One translation, so reading on and skipping both turn its pages.
+  const auto input = PanelInput::read(renderer, mappedInput, nullptr, false, false, pageTurnReversed);
+  switch (input.event) {
+    case PanelInput::Event::LongBack:
+    case PanelInput::Event::CloseAll:
+    case PanelInput::Event::SideToggle:
       cancel();
       return;
-    case PanelTouch::Action::Next:
-    case PanelTouch::Action::ScrollDown:
-      stepPage(1);
+    case PanelInput::Event::ReadOn:
+    case PanelInput::Event::Skip:
+      stepPage(input.direction);
       return;
-    case PanelTouch::Action::Previous:
-    case PanelTouch::Action::ScrollUp:
-      stepPage(-1);
+    case PanelInput::Event::Back:  // read above, before the connection is polled
+    case PanelInput::Event::Confirm:
+    case PanelInput::Event::StartCursor:
+    case PanelInput::Event::CursorPick:
+    case PanelInput::Event::LongPress:
+    case PanelInput::Event::None:
       return;
-    case PanelTouch::Action::AddButton:
-    case PanelTouch::Action::None:
-      break;
   }
-
-  buttonNavigator.onNext([this] { stepPage(1); });
-  buttonNavigator.onPrevious([this] { stepPage(-1); });
 }
 
 void EpubReaderTranslationActivity::render(RenderLock&&) {

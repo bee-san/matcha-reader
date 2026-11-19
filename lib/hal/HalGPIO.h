@@ -103,6 +103,13 @@ class HalGPIO {
   // so long-press and key-repeat handlers fire. Returns false (dropped) when the queue is full.
   bool injectPress(uint8_t buttonIndex, uint16_t holdMs = 0);
   bool isPressed(uint8_t buttonIndex) const;
+  bool isPowerButtonPhysicallyPressed() const {
+#if CROSSPOINT_EMULATED == 0
+    return inputMgr.isPowerButtonPhysicallyPressed();
+#else
+    return isPressed(BTN_POWER);
+#endif
+  }
   bool wasPressed(uint8_t buttonIndex) const;
   bool wasAnyPressed() const;
   // Live pin read, independent of update()/debounce state. Long background steps (cover
@@ -115,8 +122,8 @@ class HalGPIO {
   unsigned long getHeldTime() const;
   unsigned long getPowerButtonHeldTime() const;
   // True when any button contact is closed right now, read straight from the
-  // hardware (ADC ladder off its idle rail, the power GPIO asserted, or the T5S3
-  // expander key, one I2C read), without going through the debounced state.
+  // hardware (Xteink ADC ladder off its idle rail, a button or power GPIO asserted,
+  // or the T5S3 expander key, one I2C read), without going through the debounced state.
   // Cheap enough to call every few ms.
   bool rawInputActive();
   bool hasTouch() const;

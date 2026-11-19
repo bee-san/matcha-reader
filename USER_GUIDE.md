@@ -6,7 +6,7 @@ This guide covers the **CrossPoint** firmware as shipped in Matcha Reader: the b
 > Japanese and Chinese dictionaries, fonts, and manga or manhua must be converted before the device can use them.
 > [**Matcha Reader Tools**](https://eszter007.github.io/matcha-reader-tools/) does all of this in your web browser
 > and gives you a zip file laid out for the SD card. You do not need to install anything. Your files stay on your
-> computer. The one exception is manga text recognition (OCR), which sends page panels to Google Gemini using your own API key.
+> computer. The one exception is manga text recognition with Gemini, an option that sends page panels to Google using your own API key.
 > ([source](https://github.com/eszter007/matcha-reader-tools))
 
 - [CrossPoint User Guide](#crosspoint-user-guide)
@@ -14,7 +14,7 @@ This guide covers the **CrossPoint** firmware as shipped in Matcha Reader: the b
     - [Button Layout](#button-layout)
     - [Taking a Screenshot](#taking-a-screenshot)
     - [Syncing the Clock](#syncing-the-clock)
-    - [Frontlight (X4 Pro and Paper Mono)](#frontlight-x4-pro-and-paper-mono)
+    - [Control Center and Frontlight](#control-center-and-frontlight)
       - [Light Schedule](#light-schedule)
   - [2. Power \& Startup](#2-power--startup)
     - [Power On / Off](#power-on--off)
@@ -74,6 +74,7 @@ This guide covers the **CrossPoint** firmware as shipped in Matcha Reader: the b
     - [6.5 Books in Other Languages](#65-books-in-other-languages)
     - [6.6 Manga, Manhua and Comics](#66-manga-manhua-and-comics)
     - [6.7 Dictionary Files and Language Selection](#67-dictionary-files-and-language-selection)
+    - [6.8 Flashcards](#68-flashcards)
   - [7. Reading Insights](#7-reading-insights)
     - [7.1 Insights](#71-insights)
     - [7.2 Per-book Insights](#72-per-book-insights)
@@ -103,7 +104,7 @@ While reading, you can also press **Confirm** to open the reader menu and choose
 
 ### Syncing the Clock
 
-Set **Power + Up** in **Settings → Controls → Shortcuts** to **Sync Clock**. It is off by default. After that, pressing **Power** and **Side Up** together sets the clock from the internet, on any screen. **Sync Clock** is also offered for the power button, the side buttons and the Home key gestures.
+Set **Power + Up** in **Settings → Controls → Power button** to **Sync Clock**. It is off by default. After that, pressing **Power** and **Side Up** together sets the clock from the internet, on any screen. **Sync Clock** is also offered for the power button, the side buttons and the Home key gestures.
 
 * If Wi-Fi is not connected, the network list opens first.
 * When the new time appears, press **Back**. If you started in a book, you go back to the book.
@@ -119,10 +120,10 @@ The X4 Pro and the M5Stack Paper Mono have a built-in light. On the X4 Pro you c
 
 * **Open the panel:** Swipe down from the top edge of the screen. This works on almost every screen, including Home, Browse Files and a book. Tapping the status bar at the top also opens it.
 * **Adjust the light:** Drag the **Brightness** and **Warmth** sliders. The light changes as you drag.
-* **Turn the light on or off:** Tap the **Light** button in the row of quick buttons, or press **Confirm**. The same row also has buttons for **Night Mode**, a screen refresh, screen rotation and touch controls, and on devices with Bluetooth a button that turns the Bluetooth page turner on or off.
+* **Turn the light on or off:** Tap the **Light** button in the row of quick buttons, or press **Confirm**. The same row has **Dark**, **Refresh**, **Rotate** and **Touch**, and on devices with Bluetooth a **Bluetooth** button for the page turner. Each icon shows what a tap does: **Rotate** shows the page the way it will turn to.
 * **Use the buttons:** While the panel is open, **Side Up**/**Side Down**, **Left**/**Right** and the page-turn buttons change the brightness. Hold a button to keep changing it. On devices with side buttons on the edge, the upper button always makes the light brighter.
 * **Close the panel:** Swipe up, tap below the panel, or press **Back**.
-* **Quick on/off (X4 Pro only):** Double-click **Power**. This shortcut is **Double-Click Power for Light** in **Settings → Controls → Shortcuts** and is on by default.
+* **Quick on/off (X4 Pro only):** Double-click **Power**. This shortcut is **Double click** in **Settings → Controls → Power button** and is set to **Frontlight** by default.
 
 > [!NOTE]
 > The daytime brightness and warmth are not in **[Display Settings](#362-display)** on purpose. The pull-down panel is the only place to change them. The night levels are also in **Light Schedule** below.
@@ -136,7 +137,8 @@ again in the morning. The row shows tonight's times.
 
 - **Schedule**: **Off** (default), **Set Times**, or **Sunset to Sunrise**.
 - **Light On At** / **Light Off At** (Set Times): when the night starts and ends, in half-hour steps. The defaults are
-  20:00 and 06:00. A start later than the end runs past midnight.
+  20:00 and 06:00. A start later than the end runs past midnight. If both are the same time, the light does not
+  switch.
 - **City** (Sunset to Sunrise): the city whose sunset and sunrise are used. The default is London. Pick the nearest
   city on the list; the times are worked out on the device every day, so they follow the seasons. Set the clock's
   **Time Zone** too (**Settings → System → Clock**) so the times shown match your clock.
@@ -152,8 +154,11 @@ wakes, even after several days asleep.
 If the BOOX Picco's slide switch controls the light, the schedule only sets the night levels; the switch still turns
 the light on and off.
 
-The schedule needs the time. The X4 Pro keeps it in its clock chip. On devices without one, the time is only right
-after a Wi-Fi connection (see [Syncing the Clock](#syncing-the-clock)), and until then the schedule does nothing.
+The schedule is set on the device only; the web settings page does not show it.
+
+The schedule needs the right time. Devices with a clock chip, such as the X4 Pro, Paper Mono and BOOX Picco, keep it.
+On a device without one, the clock can be wrong until you sync it (see [Syncing the Clock](#syncing-the-clock)), and
+the light then switches at the wrong times.
 
 ---
 
@@ -163,7 +168,7 @@ after a Wi-Fi connection (see [Syncing the Clock](#syncing-the-clock)), and unti
 
 **Hold the Power button for about half a second** to turn the device on or off.
 
-To turn the device off with a short press instead, set **Short Power Button Click** to **Sleep** in **Settings → Controls → Shortcuts** (see **[Controls Settings](#367-controls)**).
+To turn the device off with a short press instead, set **Short click** to **Sleep** in **Settings → Controls → Power button** (see **[Controls Settings](#367-controls)**).
 
 To restart a frozen device, or after a firmware update, press and release **Reset**, then quickly press and hold **Power** for a few seconds.
 
@@ -185,9 +190,10 @@ Home is where you start. From here you can open:
 * your most recent book, in **[Reading Mode](#4-reading-mode)**
 * the **[Library](#34-library-screen)**
 * **[Browse Files](#33-browse-files-screen)**
-* **OPDS Browser** (online book catalogs), or **Plugins** if you have plugins installed
+* **Plugins** when the plugin system is on, otherwise **OPDS Browser** (online book catalogs) once a server is saved
 * **[File Transfer](#35-file-transfer-screen)**
 * **Insights** (your [reading insights](#7-reading-insights))
+* **[Flashcards](#68-flashcards)**, when **Enable Flashcards** is on in **Settings → Flashcards**
 * **[Settings](#36-settings)**
 
 In the **Cover Grid** theme, Home shows book covers instead of a menu. The book you are reading sits in a large card at the top, and the others follow below. The first time the device sees a book, it makes the cover in the background. Until a cover is ready, you see the book's title in its place. Pressing a button pauses this work. If a cover fails, the device tries again the next time you open Home.
@@ -200,15 +206,15 @@ In the **Cover Grid** theme, Home shows book covers instead of a menu. The book 
 
 #### 3.1.1 Tabs and Button Navigation (Cover Grid theme)
 
-In the Cover Grid theme, a row of tabs runs along the bottom of Home, Library, File Transfer, Insights and Settings. It stays in place as you move between them. The tab you are on has a filled icon.
+In the Cover Grid theme, a row of tabs runs along the bottom of Home, Library, File Transfer, Insights and Settings, plus Flashcards when **Enable Flashcards** is on in **Settings → Flashcards**. It stays in place as you move between them. The tab you are on has a filled icon.
 
 On a touch device, tap a tab.
 
 On a device with buttons only, the cursor moves in one loop through the whole screen: the screen's own tabs at the top (if it has any), then its list or covers, then the bottom tabs, and back to the top.
 
 * **Up / Side Up** and **Down / Side Down** move the cursor around the loop.
-* **Confirm** on a top tab moves to the next one, e.g. **Books**, **Shelves**, **OPDS** and **Files** in the Library, or the languages in Insights. After the last top tab, the cursor moves to the bottom tabs.
-* **Left** and **Right** on a top tab move to the previous or next one. In the bottom tabs, they move between Home, Library, File Transfer, Insights and Settings.
+* **Confirm** on a top tab moves to the next one, e.g. **Books**, **Shelves** and **Files** in the Library, or the languages in Insights. After the last top tab, the cursor moves to the bottom tabs.
+* **Left** and **Right** on a top tab move to the previous or next one. In the bottom tabs, they move between Home, Library, File Transfer, Insights, Flashcards (when shown) and Settings.
 * **Confirm** on a bottom tab opens that screen. **Confirm** on the tab you are already on sends the cursor back to the first top tab.
 * **Back** leaves the screen. Hold **Back** to go to Home.
 
@@ -220,7 +226,7 @@ See [Reading Mode](#4-reading-mode) below.
 
 ### 3.3 Browse Files Screen
 
-Browse Files shows the folders and files on the SD card. The name of the current folder is shown at the top (**SD Card** at the top level). Every file is listed with its extension, including files the device cannot open. In themes without file icons, folders are shown in brackets, e.g. `[folder-name]`.
+Browse Files shows the folders and files on the SD card. The name of the current folder is shown at the top (**SD Card** at the top level). Every file is listed with its extension, including files the device cannot open. Turn off **Settings → Display → Show File Extensions** to give names the full row; files that differ only by extension, such as `book.epub` and `book.xtc`, then look alike. In themes without file icons, folders are shown in brackets, e.g. `[folder-name]`.
 
 Files and folders whose names start with a dot are hidden. To show them, turn on **Settings → Display → Show Hidden Files**. You need this to delete the hidden folders a Mac leaves on the card, e.g. `.Spotlight-V100` or `.Trashes`. `System Volume Information` is always hidden.
 
@@ -229,7 +235,7 @@ Files and folders whose names start with a dot are hidden. To show them, turn on
 * **Go back:** Press **Back** to go up one folder. Hold **Back** to jump to the top of the card.
 * **Delete or rename:** Hold **Confirm** on a file or folder for one second. A menu offers **Open**, **Delete** and **Rename**. The device asks before it deletes anything. Deleting a folder deletes everything in it.
 
-In the **Cover Grid** theme, Browse Files is the **Files** tab of the Library, not a separate Home entry. It keeps the **Books / Shelves / OPDS / Files** tabs at the top and the tab row at the bottom. The back arrow in the header only appears inside a folder. At the top of the card, use the tabs to leave, or press **Back** to return to **Books**. All other themes keep **Browse Files** as its own entry on Home.
+In the **Cover Grid** theme, Browse Files is the **Files** tab of the Library, not a separate Home entry. It keeps the **Books / Shelves / Files** tabs at the top and the tab row at the bottom. The back arrow in the header only appears inside a folder. At the top of the card, use the tabs to leave, or press **Back** to return to **Books**. All other themes keep **Browse Files** as its own entry on Home.
 
 ### 3.4 Library Screen
 
@@ -240,9 +246,12 @@ Matcha has two Library screens. Choose one in **Settings → Library → Library
 
 The list keeps an index of up to 4,096 books on the SD card, so you can find a book without remembering its folder. It has three tabs. An arrow next to a tab shows the sort direction.
 
-* **Recent** shows the ten books you opened most recently first, then the rest of your books by file date.
+* **Recent** shows the ten books you opened most recently first, then the rest of your books by file date. Turn on
+  **Hide New Files in Recent** in **Settings → Library** to show only the books you opened.
 * **Title** groups books by the first letter of the title. Titles that start with a number or a symbol go under `#`. Other alphabets, such as Hebrew, get their own groups.
 * **Author** groups books by author.
+
+`My Clippings.txt` and `crash_report.txt` are not listed. They stay in **Browse Files**.
 
 On a device with buttons only:
 
@@ -250,12 +259,12 @@ On a device with buttons only:
 * Press **Confirm** to open the selected book.
 * Press **Back** to move the cursor from the list up to the tabs.
 * On the tabs, press **Confirm** to go to the next tab, and hold **Confirm** to reverse the sort direction. Press **Left** (or **Up**) to open Search. Press **Down** to return to the list.
-* In **Recent**, hold **Confirm** on a book for a menu with **Open**, **Delete**, **Rebuild Library Index** and an option to remove it from the recent books.
+* In **Recent**, hold **Confirm** on a book for a menu with **Open**, **Delete**, **Refresh Library** and an option to remove it from the recent books.
 * In **Title** or **Author**, hold **Confirm** on a book to fold the list into its letter or author groups. The group you were in stays selected. Press **Confirm** to open a group, or **Back** to return to the exact book you came from.
 
 On a touch device, tap a tab, a book or the Search icon. Tap the tab you are on to reverse its sort. Swipe to scroll. Long-press a book in **Recent** for the book menu. Long-press a book in **Title** or **Author** to fold the list into groups, then tap a group to open it. The refresh icon in the header rebuilds the index.
 
-The device builds the index the first time you open the list. If you add or change books later, use **Settings → Library → Rebuild Library Index**. The **Use Book Metadata** setting in the same place decides whether the index uses the title and author stored inside each book.
+The device builds the index the first time you open the list. If you add or change books later, use **Settings → Library → Refresh Library**. The **Use Book Metadata** setting in the same place decides whether the index uses the title and author stored inside each book.
 
 ### 3.5 File Transfer Screen
 
@@ -264,13 +273,18 @@ Use File Transfer to put books on the device and manage its files over Wi-Fi. Wh
 * **Join a Network**: connect to your Wi-Fi.
 * **Calibre Wireless**: receive books from Calibre (see [3.5.1](#351-calibre-wireless-transfers)).
 * **Create Hotspot**: the device makes its own Wi-Fi network for your computer or phone to join.
+* **OPDS Browser**: browse your OPDS catalogs, or add a server when none is saved (see [OPDS Servers](#369-opds-servers-multiple-libraries)). In themes with a home menu it moves to the Home screen while plugins are off and a server is saved; in the Cover Grid theme it is always listed here.
 * **USB Drive**: manage the SD card from your computer over a USB cable. Only boards that support it show this option, e.g. the X4 Pro and Paper Mono.
 
 For the Wi-Fi modes, the device starts a small web server and shows an address. Open that address in a browser on your computer or phone. The [web server docs](./docs/webserver.md) explain how to connect and upload files.
 
+> [!NOTE]
+> Older versions used `http://crosspoint.local/` and a hotspot named `CrossPoint-Reader`. Now they are `http://matcha.local/` and `Matcha-Reader`: update your bookmarks and scripts, and you can forget the old network on your phone or computer. Upload options saved on the Files page start from their defaults once.
+
 * The web page lets you download files from the device, e.g. books or screenshots, without a cable.
 * The web server also supports **WebDAV**, so you can open the device as a network drive in your computer's file manager.
 * When you have joined a network, the screen shows Wi-Fi signal bars.
+* To update an EPUB, TXT or Markdown book, upload the new version with the same file name, or copy it over the old one by USB or on the SD card. Your reading position, bookmarks and the book's own settings are kept; the book is prepared again the next time you open it. If chapters were added or removed before your place, the position can land in a different chapter.
 
 > [!TIP]
 > You can also manage files from the command line with `curl`. See the [web server docs](./docs/webserver.md).
@@ -339,6 +353,9 @@ Some rows only appear on certain devices or while another setting is on. The not
 - **Clear Reading Cache**: Deletes the data the reader saves for each book on the SD card. Your books stay, but
   **reading progress is lost** and each book is prepared again the next time you open it.
 
+- **Display Refresh**: Flashes the screen black and white ten times to clear ghosting left by earlier pages.
+  Press **Back** to stop early; the screen always ends white.
+
 - **Language**: The menu language. English, Japanese, Spanish, French and German are built in. The other languages
   in the list show **Download**: select one and the device downloads its language pack over Wi-Fi and switches to it; see
   [Language Packs (SD Card)](#39-language-packs-sd-card). Chinese menus also need a Chinese font on the SD card
@@ -359,7 +376,7 @@ Some rows only appear on certain devices or while another setting is on. The not
   pick it from the list.
 
 **Check for Updates** and **SD Card Firmware Update** are missing on boards that cannot update themselves.
-**Rebuild Library Index** is under **Settings → Library**. **Manage Fonts** is at the bottom of the font list in
+**Refresh Library** is under **Settings → Library**. **Manage Fonts** is at the bottom of the font list in
 any profile of **Settings → Reader → Text Settings**.
 
 #### 3.6.2 Display
@@ -374,7 +391,8 @@ any profile of **Settings → Reader → Text Settings**.
 
 - **Refresh Frequency**: How often the whole screen flashes black and white while you read. A full refresh clears the
   faint leftovers of earlier pages (ghosting). Choose every **1**, **5**, **10**, **15** (default) or **30** pages, or
-  **Never**. In manga each panel step counts as a page.
+  **Never**. In manga each panel step counts as a page. On the EEGO A4 the menus follow it too: after that many screen
+  changes they get one full refresh, because its menus otherwise slowly turn grey.
 
 - **UI Theme**: The look of the menus.
   - **Classic**: the original CrossPoint look.
@@ -387,10 +405,15 @@ any profile of **Settings → Reader → Text Settings**.
 - **Sunlight Fading Fix** (off by default): Fixes text fading in direct sunlight on some X4 screens. Not shown on
   touch devices, the X4 Pro or the X4 Classic.
 
+- **Light Schedule** (devices with a frontlight): turns the light on dim, and warm where supported, at night, and off
+  in the morning. See [Light Schedule](#light-schedule).
+
 - **Night Mode** (off by default): White text on black, on every screen.
 
 - **Show Hidden Files** (off by default): Shows files and folders whose names start with a dot (`.`) in the file
   browser.
+- **Show File Extensions** (on by default): Shows each file's extension in Browse Files. Turn it off to give
+  names the full row.
 
 #### 3.6.3 Sleep
 
@@ -430,14 +453,16 @@ any profile of **Settings → Reader → Text Settings**.
 - **Library View**: What the Library entry opens.
   - **Matcha Covers** (default): a grid of book covers.
   - **CrossPoint List**: a list of titles and authors; see [Library Screen](#34-library-screen).
-- **Rebuild Library Index**: Scans the card again to pick up new, moved or changed books.
+- **Hide New Files in Recent** (off by default): The Recent tab lists only the books you opened, not the rest of
+  your books below them.
+- **Refresh Library**: Scans the card again to pick up new, moved or changed books.
 - **Clear Read Books from Recent List** (off by default): Removes a book from the Recent tab once you finish it.
 - **Move Finished Books to Read Folder** (off by default): Moves a finished book into a `Read` folder.
 - **Use Book Metadata** (on by default): Uses the title and author stored inside each book when the list is
   rebuilt. Without it, or when a book has none, the file name is used.
 
 While **Matcha Covers** is selected, only **Library View** and **Move Finished Books to Read Folder** appear. The
-other three only affect the CrossPoint List. The cover grid always shows every book it finds on the card.
+other four only affect the CrossPoint List. The cover grid always shows every book it finds on the card.
 
 #### 3.6.5 Insights
 
@@ -499,14 +524,22 @@ to that book only.
     - **Hyphenation** (off by default): splits long words at the end of a line. With it on, Korean text may also
       break between syllables, without a hyphen. With it off, Korean breaks only at spaces.
     - **Embedded Style** (on by default): uses the book's own formatting (its CSS).
+    - **Publisher Fonts** (off by default, X4 Pro and other boards with PSRAM): draws a book in the fonts it
+      ships, in horizontal and vertical text. Up to two of a book's font families are used, usually the body
+      font and a heading font; any other text, and any character a book font lacks, uses your font. Works
+      only with **Embedded Style** on. TrueType and OpenType fonts only: books that ship only WOFF fonts keep
+      your font, and so does a font file larger than 4 MB (common for full Japanese or Chinese fonts). Text
+      the book sets larger or smaller is drawn by scaling the font, so it can look slightly softer.
     - **Text Anti-Aliasing** (on by default): smooth grey edges on letters, furigana included. The grey appears
       about half a second after a page turns. Turning pages faster than that skips it.
-  - The Japanese and Chinese profiles list only **Embedded Style** and **Text Anti-Aliasing** under **STYLE**.
+  - The Japanese and Chinese profiles list only **Embedded Style**, **Publisher Fonts** and **Text Anti-Aliasing**
+    under **STYLE**.
   - While a book is shown vertically, **LAYOUT** lists only **Line Spacing**, **Character spacing** and
     **Screen Margin**, the settings vertical text uses.
 
-- **Text profiles**: each of the five profiles keeps its own **font**, **font size**, **line spacing**, **character
-  spacing** and **word spacing**, so a font that suits Japanese leaves your English books alone. A book uses the
+- **Text profiles**: each of the five profiles keeps its own **font**, **Publisher Fonts** choice, **font size**,
+  **line spacing**, **character spacing** and **word spacing**, so a font that suits Japanese leaves your English
+  books alone. A book uses the
   profile of its language: Japanese, traditional Chinese (Cantonese too), simplified Chinese, or Korean (a book
   tagged `ko` or `kor`). Every other book uses **Latin & Others**. Opened from inside a book, **Text Settings** goes
   straight to that book's profile. A size or spacing you change while reading goes to the book's profile too. A font
@@ -558,20 +591,20 @@ to that book only.
 
 Which rows you see depends on your device. Touch devices hide the rows that only make sense with front buttons.
 
-- **Shortcuts**: Opens the button shortcuts, in this order. Each one is described further down.
-  - **Home Button Gestures** (devices with a Home key)
-  - **Long-Press Button Behavior**
-  - **Long-Press Menu** (button devices)
-  - **Power + Up**
-  - **Double-Click Power for Light** (X4 Pro)
-  - **Short Power Button Click**
-  - **Tilt Page Turn** (devices with a motion sensor, e.g. the X3)
-  - **Quick return from links** (only while **Short Power Button Click** is **Links and footnotes**)
-  - **Upper Side Button in Reader** and **Lower Side Button in Reader**
-  - **Slide Switch** (BOOX Picco): what the slide switch controls: **Frontlight**, **Night Mode** or **Touch Reader Controls**
-  - **Short Back to File Browser** (button devices)
+The rows are grouped by the control they change. Each one is described further down.
 
-- **Remap Front Buttons** (button devices): Choose what each button below the screen does.
+- **Home Button Gestures** (devices with a Home key)
+- **Power button**: **Short click**, **Double click** (X4 Pro), **Power + Up**, and **Quick return from links**
+  (only while a click is set to **Links and footnotes**).
+- **Front buttons** (button devices): **Remap Front Buttons**, **Orient Front Buttons**, **Short Back to File
+  Browser**, **Page turn long press** and **Menu long press**.
+- **Side buttons**: **Upper Side Button in Reader**, **Lower Side Button in Reader** and **Page turn long press**.
+  **Page turn long press** is the same setting in both groups.
+- **Taps and gestures**: **Touch Reader Controls**, the page-turn gestures, **Show Reader Menu** and **Tilt Page
+  Turn** (devices with a motion sensor, e.g. the X3).
+- The other rows, such as **Haptic Feedback** and **Slide Switch** (BOOX Picco), stay directly in Controls.
+
+- **Remap Front Buttons** (button devices, in Front buttons): Choose what each button below the screen does.
 
 - **Haptic Feedback** (off by default, devices with a vibration motor only): A short buzz when the device accepts a
   touch.
@@ -600,7 +633,7 @@ Which rows you see depends on your device. Touch devices hide the rows that only
 - **Back Resumes Last Book** (off by default; X3, X4 and X4 Classic): On the Home screen, **Back** reopens the book
   you read last, and its hint reads **Resume**.
 
-- **Upper / Lower Side Button in Reader** (in Shortcuts): What each side button does while reading. On the X4 Pro and
+- **Upper / Lower Side Button in Reader** (in Side buttons): What each side button does while reading. On the X4 Pro and
   X4 Classic the rows are called **Left** and **Right Side Button in Reader**.
   - Options: **Default** (previous page on the upper button, next page on the lower), **Off**, **Previous Page**,
     **Next Page**, **Sleep**, **Refresh Screen**, **Links and footnotes**, **Word Lookup**, **Create Clipping**,
@@ -616,12 +649,13 @@ Which rows you see depends on your device. Touch devices hide the rows that only
   **Confirm**, **KOSync**, **Bookmark**, **Dictionary**, **Reader Menu**, **Toggle Frontlight**, **Create
   Clipping**, **Sync Insights & Clock** or **Sync Clock**. A tap is **Home** by default.
 
-- **Long-Press Button Behavior**: What holding a page-turn button does.
+- **Page turn long press**: What holding a page-turn button does.
   - **Off** (default): nothing extra.
   - **Chapter Skip**: jumps to the next chapter, or back to the start of the chapter, then to the previous one.
+    In XTC books and manga, which have no chapters to skip by, it jumps 10 pages.
   - **Orientation Change**: turns the screen to the next orientation.
 
-- **Long-Press Menu** (button devices): What holding **Confirm** does while reading. A short press always opens the
+- **Menu long press** (button devices, in Front buttons): What holding **Confirm** does while reading. A short press always opens the
   reader menu.
   - **Off** (default): holding does nothing.
   - **KOSync**: hold about 1 second to start CrossPoint Sync. Works once sync is set up.
@@ -635,9 +669,11 @@ Which rows you see depends on your device. Touch devices hide the rows that only
   other options only while reading. See
   [Syncing the Clock](#syncing-the-clock).
 
-- **Double-Click Power for Light** (on by default, X4 Pro): Double-click Power to switch the frontlight on or off.
+- **Double click** (X4 Pro, in Power button): What a quick double click of Power does. It offers the **Short click**
+  actions plus **Frontlight**, the default, which switches the light on or off. **Off** lets a single click act at
+  once; with any other choice a single click waits half a second for a possible second click.
 
-- **Short Power Button Click**: What a quick press of the power button does.
+- **Short click** (in Power button): What a quick press of the power button does.
   - **Off** (default): nothing. Hold the button to switch off.
   - **Previous Page**: while reading, goes back one page.
   - **Next Page**: while reading, turns to the next page. Hold the button to switch off.
@@ -671,15 +707,17 @@ Which rows you see depends on your device. Touch devices hide the rows that only
     - The **Inverted** choices swap these. For vertical books and manga, **Reversed page turn** does the same and
       also covers the buttons.
 
-- **Show Reader Menu** (devices with a Home key only): How the reader menu opens: **Off**, **Tap** (default, tap the
-  centre) or **Swipe Up**. With **Off** you can still open it through the Home key.
+- **Show Reader Menu** (touch devices): How the reader menu opens: **Off**, **Tap** (default, tap the centre) or,
+  on devices with a Home key, **Swipe Up**. With **Off** you can still open it by swiping down from the top edge,
+  with the Home key, or with a button set to open it.
 
 - **Tap to look up** (no setting of its own): When neither page direction uses taps, a short tap on a word looks it
   up, and holding a word starts a clipping that you drag out with your finger. Tapping a link still follows it, and
-  tapping empty space in the centre opens the reader menu. In manga, holding inside a speech bubble still looks up
+  tapping empty space in the centre opens the reader menu. In the centre, a tap up to a line away from text still
+  looks up the nearest word, so a slightly missed word does not open the menu. In manga, holding inside a speech bubble still looks up
   the text.
 
-- **Quick return from links** (on by default, in Shortcuts): Only shown while **Short Power Button Click** is
+- **Quick return from links** (on by default, in Power button): Only shown while **Short click** is
   **Links and footnotes**. A quick press of Power on a footnote page then takes you back, like the Back button.
 
 - **Short Back to File Browser** (off by default, button devices): Swaps what Back does in a book. A short press
@@ -707,7 +745,21 @@ Which rows you see depends on your device. Touch devices hide the rows that only
 
 - **CrossPoint Sync**: Sync your reading position with the CrossPoint sync server or any KOReader-compatible sync server. See [KOReader Sync Quick Setup](#3611-koreader-sync-quick-setup) below.
 
+- **Flashcards Sync**: Sync Anki and Migaku decks and their review progress with a self-hosted [companion server](#the-companion-server) or, for Anki, Anki desktop (with AnkiConnect). Sync is optional. Under **Sync Server**, **Use Sync Server** turns on the companion server both services share; its **Server Address** and **Server Key** show while it is on. **Test Connection** checks each service that is on. **Anki Server** is **Off**, **Sync Server** or **Anki Desktop**, which adds **Anki Desktop Address** and **Anki Desktop Key**. **Migaku Server** is **Off** or **Sync Server**: Migaku syncs only through the companion server, so its rows are hidden while **Use Sync Server** is off. Turning **Use Sync Server** off also turns off a service that used it. A service that is on shows its decks (**Anki Decks**, **Migaku Decks**: deck names separated by commas, as the service shows them). With both on, **Mined Words To** chooses where mined words go. These rows are also on the web settings page, except **Test Connection**; there every row shows. Every sync also asks the server to sync with AnkiWeb when it has a login. See [Anki decks](#anki-decks) and [Migaku decks](#migaku-decks).
+
 - **OPDS Servers**: Save online book catalogs (OPDS libraries) so you can browse them and download books straight to the device. See [OPDS Servers (Multiple Libraries)](#369-opds-servers-multiple-libraries) below. ([What is OPDS?](https://en.wikipedia.org/wiki/Open_Publication_Distribution_System))
+
+#### Flashcards settings
+
+**Settings → Flashcards** sets how [Flashcards](#68-flashcards) schedules your cards:
+
+- **Enable Flashcards** (off by default): adds Flashcards to Home and to the bottom tabs. **Open Flashcards**, just below it, opens it from here either way.
+- **Desired Retention**: how sure you want to be to still know a card when it comes back: **80%**, **85%**, **90%** (default) or **95%**. Higher means shorter gaps and more reviews.
+- **New Cards per Day**: **5**, **10**, **20**, **30** or **50** new cards per deck each day.
+- **Maximum Interval**: the longest gap before a card comes back: **1 month**, **6 months**, **1 year** or **No limit**.
+- **Vacation Mode**: pauses reviews. While it is on, nothing comes due, no new cards are added and the overview says **On vacation**. When you turn it off, every due date moves forward by the days you were away, so the reviews do not pile up. The device needs the clock to be set to count those days; until then it waits.
+
+An Anki deck uses its own preset in Anki for **New Cards per Day**, **Desired Retention** and **Maximum Interval**, and also its daily review limit, its learning and relearning steps, the order of new cards and reviews (by due date, random or by interval; new cards before, after or mixed with the reviews), burying of sibling cards, Easy Days and its leech rule, once a sync has read them. If the preset uses an order the device does not have, the device uses its own: most overdue first, and new cards in the order they were added. Easy Days moves a card to a lighter weekday within a few days of its date; unlike Anki, it does not look at how many cards are already due on each day. The settings above are used for your own decks, and for an Anki deck when the sync cannot read its preset. **Vacation Mode** applies to all decks.
 
 #### 3.6.9 OPDS Servers (Multiple Libraries)
 
@@ -715,13 +767,13 @@ You can save up to 8 catalogs (for example your Calibre library at home and a pu
 
 **Where to find your catalogs**
 
-- **Cover Grid** theme: open the Library's **OPDS** tab (next to **Books**, **Shelves** and **Files**). It lists your saved servers and an **Add Server** row. Choose a server to open its catalog. Wi-Fi only connects at that moment, never just because you moved across the tabs. Press **Back** at the top level of a catalog to return to the tab.
-- Other themes: open the catalogs from the home menu.
+- **Cover Grid** theme: open the **File Transfer** tab and choose **OPDS Browser**. It lists your saved servers and an **Add Server** row; with only one server saved it opens that catalog directly. Choose a server to open its catalog. Wi-Fi only connects at that moment.
+- Other themes: open the catalogs from the home menu, or from **File Transfer → OPDS Browser** while the home menu does not show them.
 
-In the Cover Grid theme the catalog stays inside the Library screen, with the tabs above it and the bottom bar below. Only the Wi-Fi picker takes the full screen. On a device without a touch screen:
-- **Up** from the first entry jumps to the tabs. There, **Left** and **Right** switch tabs.
-- **Down** past the last entry jumps to the bottom bar.
-- On an error screen or an empty catalog, **Up** and **Down** go straight to the tabs and the bar.
+In the Cover Grid theme the server list and the catalog keep the bottom bar, with **File Transfer** marked. Only the Wi-Fi picker takes the full screen. Press **Back** at the top level of a catalog to return to the server list (or to File Transfer when the list was skipped), and **Back** on the server list to return to File Transfer. On a device without a touch screen:
+
+- **Down** past the last entry jumps to the bottom bar, and **Up** from the first entry wraps to it.
+- On an error screen or an empty catalog, **Up** and **Down** go straight to the bar.
 
 **Add or edit a server**
 
@@ -746,7 +798,7 @@ You can also manage servers from a computer or phone. See [Web Settings (Wi-Fi +
 The device's web page lets you manage saved Wi-Fi networks and OPDS servers from a browser.
 
 1. On the device, open **File Transfer** and choose **Join a Network** or **Create Hotspot**.
-2. On your computer or phone, open `http://<device-ip>/settings` (the address shown on the device screen) or `http://crosspoint.local/settings`.
+2. On your computer or phone, open `http://<device-ip>/settings` (the address shown on the device screen) or `http://matcha.local/settings` if the device shows that address.
 3. In the **Wi-Fi Networks** card, add, edit or delete networks (network name, called SSID, plus an optional password).
 4. In the **OPDS Servers** card, add, edit or delete catalogs.
 
@@ -754,6 +806,12 @@ Good to know:
 - Saved passwords are never shown again. A password field marked **(unchanged)** already has one stored.
 - To keep a stored password while editing, leave the password field empty.
 - You can save a hidden network here. Whether the device can then connect to it depends on the device's own Wi-Fi connection screen.
+
+**Insights:** the **Edit Insights** tab of the same web page lists every book with recorded reading time. Pick a book
+to see its reading days, change a day's minutes (0 removes the day), or add a missing day. Your totals,
+streaks and calendar follow the change. Only days that have not been synced yet can be changed: once a day
+reaches the sync server, the server keeps the higher number and sends it back at the next sync. The time of day
+breakdown and the number of sessions stay as they were.
 
 #### 3.6.11 KOReader Sync Quick Setup
 
@@ -884,7 +942,7 @@ To sync, press **Confirm** while reading to open the reader menu, then select **
 
 This works in every reader: EPUB, TXT and Markdown, XTC/XTCH and manga. An XTC or manga book syncs its page, the way KOReader syncs a PDF or CBZ. A manga also finds the position of the same title read as `Title.cbz`, `.epub`, `.pdf`, `.xtc` or `.xtch` on another device. Those files number their pages differently, so the reader then goes by the share of the book read, e.g. 40%.
 
-For a shortcut, set **Settings → Controls → Shortcuts → Long-Press Menu** to **KOSync**. Holding **Confirm** then starts a sync, in every reader. In XTC and manga, KOSync is the only Long-Press Menu choice that works.
+For a shortcut, set **Settings → Controls → Front buttons → Menu long press** to **KOSync**. Holding **Confirm** then starts a sync, in every reader. In XTC and manga, KOSync is the only Menu long press choice that works.
 
 **Sync Behavior** decides what happens when the device and the server disagree:
 - **Smart Sync** (default for new setups) handles the easy cases on its own. It uploads your position when the server has none or when you are further ahead. It jumps to the server's position when that one is further ahead. If both already match, it confirms and changes nothing. It never asks, also not when you open a book.
@@ -1035,15 +1093,15 @@ When a book is open, the buttons switch to reading controls.
 
 On a touch device, **Next Page** and **Previous Page** in **Settings → Controls** choose whether taps, swipes or both turn the page.
 
-You can give each side button a different job (e.g. Sleep or Footnotes) in **Settings → Controls → Shortcuts**, under **Upper Side Button in Reader** and **Lower Side Button in Reader**. On the X4 Pro the two rows are called **Left Side Button in Reader** and **Right Side Button in Reader**.
+You can give each side button a different job (e.g. Sleep or Footnotes) in **Settings → Controls → Side buttons**, under **Upper Side Button in Reader** and **Lower Side Button in Reader**. On the X4 Pro the two rows are called **Left Side Button in Reader** and **Right Side Button in Reader**.
 
-The Power button can turn pages too. Set **Short Power Button Click** (also in Shortcuts) to **Next Page** or **Previous Page**.
+The Power button can turn pages too. Set **Short click** in **Settings → Controls → Power button** to **Next Page** or **Previous Page**.
 
 ### Chapter Navigation
 
-To jump a whole chapter with a long press, open **Settings → Controls → Shortcuts** and set **Long-Press Button Behavior** to **Chapter Skip**. It is off by default.
+To jump a whole chapter with a long press, open **Settings → Controls → Front buttons** (or **Side buttons**) and set **Page turn long press** to **Chapter Skip**. It is off by default.
 
-With it on, hold **Right** (or **Side Down**) for about a second to go to the next chapter. Hold **Left** (or **Side Up**) to go back to the start of the chapter, and hold again to reach the previous one. If you skip by mistake, **Jump Back** in the reader menu returns you, and **Last 5 pages read** lists the places before that.
+With it on, hold **Right** (or **Side Down**) for about a second to go to the next chapter. Hold **Left** (or **Side Up**) to go back to the start of the chapter, and hold again to reach the previous one. If you skip by mistake, **Jump Back** in the reader menu returns you, and **Recent Pages** lists the places before that.
 
 You can also pick any chapter from the **[Reader Menu](#5-reader-menu)**.
 
@@ -1053,7 +1111,7 @@ Auto Page Turn moves to the next page on its own, so you can read without touchi
 
 ### Tilt Page Turn (X3 only)
 
-The Xteink X3 can turn pages when you tilt it. Turn this on with **Tilt Page Turn** in **Settings → Controls → Shortcuts**. **Inverted** swaps the tilt directions. The setting only appears on devices with a motion sensor.
+The Xteink X3 can turn pages when you tilt it. Turn this on with **Tilt Page Turn** in **Settings → Controls → Taps and gestures**. **Inverted** swaps the tilt directions. The setting only appears on devices with a motion sensor.
 
 ### Images in Books
 
@@ -1067,12 +1125,14 @@ The book remembers your way back. If the device goes to sleep, or you close the 
 
 To read footnotes without leaving the page, choose **Links and footnotes** in the Reader Menu. You can also set the Power button or a side button to **Footnotes**. The notes open in a small panel on top of the page, starting at the note closest to where you are. The bottom of the panel shows which note you are on, e.g. `2/3`.
 
-| In the footnote panel            | Buttons          | Touch                                           |
-| -------------------------------- | ---------------- | ----------------------------------------------- |
-| Scroll a long note               | **Up** / **Down** | Swipe up or down                                |
-| Next or previous note            | **Left** / **Right** | Your page-turn gesture                      |
-| Go to the note in the book       | **Confirm**      |                                                 |
-| Close the panel                  | **Back**         | Tap outside the panel                           |
+The panel uses the same buttons as the dictionary panels (see [6.1](#61-word-lookup)):
+
+| In the footnote panel            | Buttons                                   | Touch                  |
+| -------------------------------- | ----------------------------------------- | ---------------------- |
+| Read on: down a long note, then the next note | Press **Down** / **Right** (**Up** / **Left** goes back) | Swipe up or down |
+| Skip to the next or previous note | Hold **Down** / **Right** (or **Up** / **Left**) | Your page-turn gesture |
+| Go to the note in the book       | **Confirm** (or **Power**)                |                        |
+| Close the panel                  | **Back**                                  | Tap outside the panel  |
 
 <p align="center"><img src="docs/images/screenshots/footnotes.png" width="260" alt="A footnote in the floating panel, note 2 of 3"></p>
 
@@ -1083,7 +1143,7 @@ You can look up words with an offline dictionary on the SD card. To set it up:
 1. Copy a StarDict dictionary into the `/dictionaries/` folder (or `/.dictionaries/`, see [6.7](#67-dictionary-files-and-language-selection)).
 2. Select it in **Settings → Reader → Dictionary Settings → Fallback for other languages**. Inside a book, the same row in **Reader Settings** is called **Dictionary**.
 
-To look up a word with the buttons, choose **Look Up** in the **[Reader Menu](#5-reader-menu)**. Use **Left** and **Right** to highlight a word, then press **Confirm** to see its definition. On button-only devices you can also start a lookup by holding **Confirm**, if **Long-Press Menu** in **Settings → Controls → Shortcuts** is set to **Dictionary**.
+To look up a word with the buttons, choose **Look Up** in the **[Reader Menu](#5-reader-menu)**. Use **Left** and **Right** to highlight a word, then press **Confirm** to see its definition. On button-only devices you can also start a lookup by holding **Confirm**, if **Menu long press** in **Settings → Controls → Front buttons** is set to **Dictionary**.
 
 On a touch device, press and hold a word on the page. Its definition opens straight away. If your page turns use swipes only, a short tap on a word opens the definition and holding a word starts a clipping instead (see [3.6.7](#367-controls)). Page through a long definition with your page-turn gesture, and tap outside the card to close it.
 
@@ -1097,9 +1157,9 @@ See [docs/dictionary.md](docs/dictionary.md) for supported formats and where to 
 | **Go to Browse Files**    | Hold **Back** for about a second. The **[Browse Files](#33-browse-files-screen)** screen opens. |
 | **Open the Reader Menu**  | Press **Confirm**. On a touch device, tap the middle of the page.                      |
 
-**Short Back to File Browser** in **Settings → Controls → Shortcuts** swaps the two **Back** actions.
+**Short Back to File Browser** in **Settings → Controls → Front buttons** swaps the two **Back** actions.
 
-**Hold Confirm (button-only devices).** Holding **Confirm** does whatever **Long-Press Menu** is set to. The choices are **Bookmark** (adds or removes a bookmark), **KOSync** (opens KOReader Sync), **Dictionary** (starts a word lookup), **Create Clipping** (starts a text selection), **Links and footnotes** (opens the footnote panel) and **Off**, which is the default. A short press always opens the Reader Menu. Touch devices don't have this setting. There, the Power button or Home button shortcuts do these jobs.
+**Hold Confirm (button-only devices).** Holding **Confirm** does whatever **Menu long press** is set to. The choices are **Bookmark** (adds or removes a bookmark), **KOSync** (opens KOReader Sync), **Dictionary** (starts a word lookup), **Create Clipping** (starts a text selection), **Links and footnotes** (opens the footnote panel) and **Off**, which is the default. A short press always opens the Reader Menu. Touch devices don't have this setting. There, the Power button or Home button shortcuts do these jobs.
 
 ### Supported Languages
 
@@ -1124,8 +1184,8 @@ The menu shows these entries, top to bottom. Some only appear when they apply to
 
 | Entry | What it does |
 | ----- | ------------ |
-| **Jump Back** | Shown after you jump: to a chapter, a percentage, a bookmark, a clipping, or with Chapter Skip. Returns to the place you left; the value shows where (a percentage in books, a page in manga). Choose it again to undo. Kept through sleep and when you reopen the book. |
-| **Last 5 pages read** | Shown in books once you have read in more than one place. Opens a list of the last five places you read, newest first, with the time you were there: "Page 396 - 12:32 PM", "Yesterday" or a date for older ones (no time when the clock is not set). Turning pages keeps one place; a jump, a link, a sync or reopening the book somewhere else starts a new one, and a place you leave within a few seconds without turning a page is not kept. Choose a place to go back; **Jump Back** then returns to where you were. Kept through sleep and when you reopen the book. Also in the toolbar's **More** panel. |
+| **Jump Back** | Shown after you jump: to a chapter, a percentage, a bookmark, a clipping, or with Chapter Skip. Returns to the place you left; the value shows the book percentage it leads to. Choose it again to undo. Kept through sleep and when you reopen the book. |
+| **Recent Pages** | Shown in books once you have read in more than one place. Opens a list of the last places you read, newest first, with the chapter, the page within it and the time you were there: "第二夜 · Page 3 · 21:14", "Yesterday" or a date for older ones (no time when the clock is not set). Turning pages keeps one place; a jump, a link, a sync or reopening the book somewhere else starts a new one, and a place you leave within a few seconds without turning a page is not kept. Choose a place to go back; **Jump Back** then returns to where you were. Kept through sleep and when you reopen the book. Also in the toolbar's **More** panel. |
 | **Select Chapter** | Opens the table of contents (see [5.1](#51-chapter-selection)). |
 | **Links and footnotes** | Opens the footnote panel. Shown when the chapter has footnotes. |
 | **Word Lookup** | Looks up words in Japanese and Chinese books (see [§6](#6-language-learning-features)). |
@@ -1172,7 +1232,7 @@ Press **Back** to return to the Reader Menu without changing chapter.
 
 A bookmark saves your place so you can come back to it later.
 
-**To add a bookmark**, choose **Toggle Bookmark** in the Reader Menu. A short message says **Bookmark Added.** Choosing it again on the same page removes the bookmark. With the **Toolbar** menu style, tap the bookmark on the dock's chapter line instead. On button-only devices you can also hold **Confirm**, if **Long-Press Menu** is set to **Bookmark** (see [System Navigation](#system-navigation)).
+**To add a bookmark**, choose **Toggle Bookmark** in the Reader Menu. A short message says **Bookmark Added.** Choosing it again on the same page removes the bookmark. With the **Toolbar** menu style, tap the bookmark on the dock's chapter line instead. On button-only devices you can also hold **Confirm**, if **Menu long press** is set to **Bookmark** (see [System Navigation](#system-navigation)).
 
 **To open a bookmark**, choose **Bookmarks** in the Reader Menu, highlight one and press **Confirm**.
 
@@ -1226,7 +1286,7 @@ Word Lookup shows the dictionary entry for a word on the page.
 - Open the reader menu and choose **Word Lookup**. It is listed for Japanese and Chinese books once their
   dictionary is installed.
 - On a touch device, hold your finger on a word. Its entry opens straight away.
-- For one-press access, go to **Settings → Controls → Shortcuts** and set **Short Power Button Click** to
+- For one-press access, go to **Settings → Controls → Power button** and set **Short click** to
   **Word Lookup**. A side button can be set to **Word Lookup** on the same screen.
 
 Lookup opens on the page you were reading, vertical or horizontal, with one word highlighted. On a touch device
@@ -1251,7 +1311,7 @@ buttons can reach every word with them alone.
 | --- | --- |
 | **Look Up** (Confirm) | Open the entry for the highlighted word |
 | Back | Return to reading |
-| Power (short click) | Open the entry, when **Short Power Button Click** is set to **Word Lookup** |
+| Power (short click) | Open the entry, when **Short click** is set to **Word Lookup** |
 
 No button labels are shown on this screen. A label bar would cover the last line of text.
 
@@ -1278,6 +1338,23 @@ and a Chinese word may have several readings. Each entry gets its own page. Ever
 | Swipe up / down (touch) | Same as a press |
 | Page-turn swipe (touch) | Same as a hold |
 
+**Looking up a word inside an entry**
+
+Words in an entry can be looked up too, for example a word in an example sentence. The new entry opens over the
+one you were reading, in the same panel.
+
+- On a touch device, hold your finger on the word.
+- With buttons, hold **Select** (Confirm, about 1 s), or just press it in an entry that was itself opened this way. A box appears on the first word of the page. Move it with the
+  page buttons, then press **Look Up** (Confirm) to look it up. **Back** removes the box.
+- In Japanese and Chinese entries the box steps one character at a time; the lookup reads the longest word that starts
+  there.
+- **Back** returns to the previous entry, on the page you left. Hold **Back** (about 1 s) to close every entry
+  and return to the book. A short power click does the same, when the shortcut above is set.
+- Up to 8 entries can be open at once; a ninth shows "Too many lookups open". On the X4 and X3, which have
+  less memory, only one entry can be opened over the first. When memory is low, the lookup shows "Low memory - try again" and the
+  current entry stays open.
+- An entry opened this way is not saved for sentence mining, since it has no sentence from the book.
+
 **In manga**, lookup opens straight in the entry view:
 
 | Button | Action |
@@ -1288,10 +1365,10 @@ and a Chinese word may have several readings. Each entry gets its own page. Ever
 | Hold Up / Left | Skip to the previous word |
 | Select | Save the word and its sentence for sentence mining (see below) |
 | Back | Return to reading |
-| Power (short click) | Same as Back, when **Short Power Button Click** is set to **Word Lookup** |
+| Power (short click) | Same as Back, when **Short click** is set to **Word Lookup** |
 
-The bottom of the entry shows where you are (e.g. 10/35) and which dictionary answered (e.g. `Vocab | JMdict` or
-`Vocab | CC-CEDICT`). You only land on words the dictionary has. When stepping from word to word in manga, each word
+The bottom of the entry shows which dictionary answered (e.g. `Vocab | JMdict` or `Vocab | CC-CEDICT`) and, when
+there is more than one screen to page through, which one you are on, counting the screens of every entry (e.g. 1/3). You only land on words the dictionary has. When stepping from word to word in manga, each word
 shows one entry so stepping stays quick.
 
 **Settings**
@@ -1330,12 +1407,27 @@ into its own Anki deck. Each card holds:
 | Book, Author | Where it came from |
 | Date | The day you saved it |
 | Dictionary | Which dictionary answered |
+| Furigana | Japanese only: the reading over each kanji in Anki's furigana format, e.g. `木[こ]漏[も]れ 日[び]`. It comes from the book's own furigana when the word has it, otherwise from the dictionary when it was converted with furigana (see [Dictionary setup](docs/dictionary-setup.md#japanese)). Empty when neither knows |
 | Tags | `matcha` and the book title |
 
 A sentence cut off at the bottom of the page is completed from the next page. In manga, the sentence is the text of
 the speech bubble the word is in.
 
-**Importing into Anki**
+**Sending to Anki with sync**
+
+If you sync with Anki (see [Anki decks](#anki-decks)), **Sync Flashcards** sends your mined words to Anki for you:
+
+- Words not yet in Anki become notes of the **Matcha sentence** note type, in one deck per language: **Matcha::日本語**, **Matcha::Deutsch** and so on. The note type and the decks are made in Anki when they are missing, and the decks are added to **Anki Decks**.
+- Each word leaves the device's own deck and comes back as a card of that Anki deck, with its review history. Its progress goes with it, so Anki shows the same next review as the device.
+- A word already in Anki as a **Matcha sentence** note with the same word and sentence (for example from an earlier import by hand) is reused, not added again. Its schedule in Anki is kept.
+- Words you mine later stay in the device's own deck until the next sync.
+- You can rename the deck in Anki: the device follows it.
+
+With **Mined Words To** set to **Migaku**, or with only Migaku on, the words go to Migaku instead and Anki gets none. See [Migaku decks](#migaku-decks).
+
+A word that Anki does not take (for example one too large to send) stays on the device and is tried again at the next sync. It never stops your other decks from syncing.
+
+**Importing into Anki by hand**
 
 1. Copy the CSV file to your computer.
 2. In Anki, choose **File → Import** and pick the file.
@@ -1344,27 +1436,67 @@ The file tells Anki how it is laid out, so you do not need to set up columns. Th
 more words. You can import the same file again later: Anki updates the cards it already has and adds only the new
 ones.
 
+To show the Furigana column as ruby in Anki, add a Furigana field to your note type and put `{{furigana:Furigana}}`
+on the card template. A ready-made note type that looks like the device's flashcards is in
+[docs/anki](docs/anki/README.md).
+
+Files saved before the Furigana column existed are updated the next time you save a word or open the deck under
+Flashcards: an empty Furigana field is added to every row and the header is rewritten. Import the updated file
+into Anki as usual, and map the new column to your Furigana field (or ignore it).
+
 The file is plain CSV, so a spreadsheet or another flashcard app can open it too.
 
 **The date** comes from the device clock, which is set whenever the device connects to Wi-Fi. The X4 has no clock
 chip and loses the time on a restart, so the date can be wrong or empty until the next Wi-Fi connection. To set
 the clock at any time, see [Syncing the Clock](#syncing-the-clock).
 
+#### Vocabulary history
+
+Sentence mining saves only the words you choose. Vocabulary history keeps every word you look up, in every
+language and in manga too, without a button press. Turn it on in **Reader Settings → Save Vocabulary Lookups**
+(off by default). It works alongside sentence mining: neither changes what the other saves.
+
+Each lookup adds one line to `Vocabulary.txt` at the root of the SD card. Looking up a word again adds another
+line. When you step to the next word or a selection brings in more words, each word gets its own line. A word
+looked up inside a definition is saved too, under the book the first lookup was made in.
+
+Each line is a JSON object (JSON Lines), the same format as CrossPoint's vocabulary history. It holds:
+
+| Field | Contents |
+| --- | --- |
+| `word` | The word as it appears on the page |
+| `headword` | The dictionary entry it matched |
+| `definition` | The entry as plain text, shortened past 2 KB (`definition_truncated` says so) |
+| `title`, `author`, `series`, `series_index` | The book. Manga have no series |
+| `chapter`, `page`, `spine` | Where you were reading. `page` is the page in the chapter, counted from 1. Manga leave these at 0 |
+| `timestamp` | When, in Unix seconds, or `null` while the clock is not set |
+
+If the file cannot be written, the lookup still opens and nothing is saved.
+
 ### 6.2 Page Translation
 
-Reader menu → **Translate Page** translates the current page into English.
+Reader menu → **Translate Page** translates the current page into English. To translate into another language,
+choose it under **Settings → Reader → Translation Settings → Translate To**. The choices are English (default),
+German, French, Spanish, Italian, Portuguese, Dutch, Hungarian, Polish, Russian, Ukrainian, Japanese, Chinese
+(Simplified) and Korean. Pick **Custom** to type any other language, for example `Brazilian Portuguese` or `Catalan`
+(up to 40 characters). You can also set both in the web **Settings** page while File Transfer is running. The typed
+language is saved as `gemini.lang` next to `gemini.key`.
 
 **Before the first use**, get a Gemini API key from Google and save it as a text file named `gemini.key` in the
 `/.system/` folder on the SD card. A `/system/` folder works too. The dotted name hides the folder in the file
 browser.
+
+If Google's servers are busy (an error ending in **(503)**, common with a free-tier key) or the key's quota for
+the model is used up, the reader tries a lighter Gemini model before giving up. To choose the model yourself,
+save its name, for example `gemini-flash-lite-latest`, in a text file named `gemini.model` next to `gemini.key`.
 
 **What happens**
 
 1. The reader connects to the last Wi-Fi network you used. If there is none, or it does not answer, the Wi-Fi list
    opens. Pick a network and the translation continues.
 2. "Translating..." shows while it works.
-3. The translation opens in a panel over the page. A long one is split into pages: turn them with Left / Right,
-   the page buttons or your usual page-turn gesture.
+3. The translation opens in a panel over the page. A long one is split into pages: turn them with any arrow or
+   page button (pressed or held), a swipe up or down, or your usual page-turn gesture.
 4. Press Back, or tap outside the panel, to return to the book.
 
 <p align="center"><img src="docs/images/screenshots/translate-page.png" width="260" alt="A page translation in the floating panel"></p>
@@ -1375,6 +1507,9 @@ Copy a Japanese EPUB to the SD card and open it from the Library. A Japanese nov
 in vertical text, other Japanese books horizontally. To open every Japanese book one way, set **Tategaki (vertical
 Japanese)** in **Settings → Reader → Text Settings → Japanese** to **On** or **Off**. A book with no language set, or the wrong one, is recognised
 from its kana the first time you open it.
+
+**Text sizes.** Vertical text keeps the sizes the book sets: titles and headings are larger, notes smaller. A larger
+character takes more room down its column, and a column is as wide as the largest text in it.
 
 **Furigana.** The reader shows the furigana that a book already has. It cannot add furigana itself. For a book
 without them, you can add them once on a computer before copying the book to the card:
@@ -1543,7 +1678,7 @@ Chinese book. One difference: the cursor stops on every word, including words th
 
 **Word forms.** Words on the page are often not in the form the dictionary lists. When a lookup finds nothing,
 the reader tries again with other forms of the word. It checks the dictionary's own `.syn` file first, if there
-is one, and then the rules for the book's language. In every language a capital letter at the start of a
+is one, and then the rules for the book's language. When the `.syn` file sends one form to several words, the panel shows each of them: `went` gives `go` and then `wend`. In every language a capital letter at the start of a
 sentence is ignored, accents included, so `École` finds `école` and `Über` finds `über`.
 
 French has extra rules:
@@ -1577,7 +1712,7 @@ lookup in its speech bubbles is not supported yet.
 
 Convert the book with [Matcha Reader Tools](https://eszter007.github.io/matcha-reader-tools/) and pick the X3 or
 X4 target, so the pages are sized for your screen. Manga that was already read with [Mokuro](https://github.com/kha-white/mokuro)
-converts with the script instead, without a Gemini key (see [docs/manga-conversion.md](docs/manga-conversion.md#manga-already-read-by-mokuro)). Then copy the `.matcha` file (or, for older firmware, the
+converts with the script instead, keeping Mokuro's text; a whole Mokuro library converts in one run (see [docs/manga-conversion.md](docs/manga-conversion.md#manga-already-read-by-mokuro)). Then copy the `.matcha` file (or, for older firmware, the
 folder; see below) anywhere on the SD card. Any name and depth works. The book shows up in the Library grid, on shelves and in Continue Reading with its cover, title,
 author and progress.
 
@@ -1587,6 +1722,9 @@ author and progress.
 | Confirm | Reader menu | Reader menu |
 | Back | Leave the book | Back to the full page |
 | Hold Back | Open the file browser at the book | Open the file browser at the book |
+
+Side buttons with their own action, Tilt Page Turn and the other reader shortcuts work in manga as they do in books
+(see **Settings → Controls**).
 
 <p align="center">
   <img src="docs/images/screenshots/manga-full-page.png" width="240" alt="Full page view">
@@ -1649,7 +1787,7 @@ cover and progress. Both forms keep working side by side.
   by double-clicking it in Finder or with **Extract All** in Windows. You get the book's files back in a folder,
   plus one extra file, `matcha.idx`, which a folder book does not need.
 
-Reaching the last page marks the manga as finished in your reading insights, the same as an EPUB.
+Turning past the last page opens the end-of-book screen and marks the manga as finished, the same as an EPUB.
 
 #### Reading the text with Screen AI
 
@@ -1772,8 +1910,9 @@ For Cantonese (`yue`), convert with `--lang yue`.
 **Several dictionaries in one language.** Give each one its own folder, e.g. `en/collins/` and `en/wiktionary/`.
 A lookup searches up to four dictionaries for the book's language and shows every entry it finds, one after the
 other. Page past the end of one entry and the next dictionary's entry opens. Page back from its first page and you
-return to the last page of the previous one. The bottom line names the dictionary and its place in the list, e.g.
-`Collins (1/2)`. The dictionary chosen under **Settings → Reader → Dictionary Settings → Fallback for other languages** comes first if it is in the
+return to the last page of the previous one. The bottom line names the dictionary, and on the right counts the screens of all
+entries together, e.g. `3/7`: how often you can still press on. A `~` in front (`~1/7`) means some entries are not
+measured yet; the number becomes exact as you page. The dictionary chosen under **Settings → Reader → Dictionary Settings → Fallback for other languages** comes first if it is in the
 book's language. The others follow in folder-name order. A saved sentence records the dictionary whose entry was on
 screen. The first lookup in a newly added dictionary takes longer, because the reader prepares the dictionary
 for searching.
@@ -1795,6 +1934,107 @@ Older setups still work. A dictionary folder placed directly under `dictionaries
 still be chosen as the fallback dictionary. Japanese files in the old `dict/` folder are still found.
 
 
+### 6.8 Flashcards
+
+Flashcards turns the words you save with [sentence mining](#sentence-mining) into cards you can review on the device. Each language's `sentences-<lang>.csv` is one deck. Reviews are scheduled with FSRS, the scheduler Anki uses, so a card comes back just before you would forget it. Your progress is kept in the device's system folder; the CSV files are not changed by reviewing.
+
+**Opening it:** turn on **Enable Flashcards** in [Settings → Flashcards](#flashcards-settings). Flashcards then appears on Home and in the bottom tabs.
+
+**The overview** shows how many cards are waiting today, then one row per deck with its count. Decks are named in their own language (日本語, 中文, Deutsch…). Korean and Cantonese use the name in your device language, because the menu font has no Hangul and no 粵. Choose a deck to start. A deck with nothing due cannot be opened. When nothing is due anywhere, the overview says **Nothing due today** (or **On vacation**).
+
+**A card:**
+
+- **Front:** the word on the card's spine and the sentence you saved it from, with the word in bold, and the book's title at the bottom. Japanese cards are set vertically, in columns from right to left, with the spine on the right.
+- **Turn** (**Confirm**, a side button, or **Tap to turn**) shows the back: the reading, the definition and the sentence again. On a Japanese card the reading stands beside each kanji on the spine, like furigana. It uses the card's Furigana column when there is one; otherwise it is placed from the word's kana.
+- **Rate** with **Again**, **Hard**, **Good** or **Easy**. Each box shows when the card would come back. **Left** and **Right** choose a box and **Confirm** rates; on a touch device, tap a box. A side button turns the card back to the front. A new card, or one you rated **Again**, goes through short learning steps: 10 minutes on your own decks, the deck's own steps on an Anki deck (a deck without steps gives a day interval at once). It comes back in the same session once its step has passed, ahead of the cards you have not seen yet. When only such cards are left, the next one is shown straight away. If you leave the deck, a card between steps keeps its step and its time, and comes back first once that time has passed.
+
+When the deck is done, the screen says **All caught up** with the number of cards reviewed; **Confirm** or a tap closes it. **Back** leaves at any time; your progress is saved.
+
+#### Anki decks
+
+Anki decks are listed in the overview next to your own decks. Each card is drawn with its deck's own template and style, and is rated the same way. Card text uses your reader font and size: the deck's base text size becomes your reader size, and every other size keeps its proportion to it, from three quarters to one and a quarter of it. The deck's left and right margins are kept, up to twice the text size. A long side is paged with the side buttons before the card turns. A very long side is cut off after a number of pages; review the rest in Anki. A card whose content is too large for the device says so; review that card in Anki.
+
+There are two ways to get a deck onto the device:
+
+- **Import, without sync:** open an exported `.apkg` in the [Anki Converter](https://eszter007.github.io/matcha-reader-tools/anki.html) of Matcha Reader Tools, in your browser, and copy the result to the SD card (or use `tools/anki_import/apkg_to_flashcards.py` on a computer with Python). Progress then stays on the device and does not go back to Anki. To keep Anki up to date, use sync instead (see [Offline reviews, synced with Anki on your computer](#offline-reviews-synced-with-anki-on-your-computer)).
+- **Sync:** set up [Flashcards Sync](#368-connectivity), then choose **Sync Flashcards** at the bottom of the overview. It turns Wi-Fi on, downloads the chosen decks, and sends reviews both ways. Later syncs download only new and changed cards. To stop a sync, press **Back** (on a touch device, tap the back arrow or swipe from the left edge); it stops after the current card and keeps the cards synced so far. If a sync stops partway, the next one continues near where it stopped. A card too large for the device is downloaded again only after it is changed in Anki. Images are downloaded with their cards. The companion server shrinks large images to screen size first. An image still over 1 MB (4 MB with PSRAM) is not kept; an image that fails for another reason is tried again at the next sync. A type-in answer shows no typing box. With the companion server, the back shows the expected answer; with Anki desktop, the box is left out. If a card does not fit in the memory left during a sync, it is left for the next sync. When a card template or a style changes in Anki, the next sync downloads the deck's cards again. After a deck has synced once, renaming it in Anki is fine: the device finds it again and shows the new name in **Anki Decks**. If a deck in **Anki Decks** is not in Anki, the sync still syncs the other decks, then shows an error with the name of the first missing deck. Reviews of a card you deleted in Anki are not sent; the rest of the deck syncs as usual.
+
+A deck holds up to 2,000 cards on the device (10,000 on the X4 Pro and other devices with PSRAM, which also fit larger cards); a larger deck is cut there. Cards suspended in Anki are left off the device, and come back with their progress when you unsuspend them. Cards buried in Anki are not shown on the day of the sync. A card you forget many times (a "leech": as many times as the deck's leech threshold in Anki) is tagged "leech" in Anki at the next sync. If the deck's preset says to suspend leeches, the device stops showing it at once and the sync suspends it in Anki.
+
+##### The companion server
+
+Anki desktop must be open on your computer for a sync. If you would rather sync at any time, run the companion server, [matcha-anki-server](https://github.com/eszter007/matcha-anki-server), on a computer that is always on: a NAS, a Raspberry Pi, a home server, or a small cloud server. It keeps your Anki collection, syncs it with AnkiWeb, and answers the reader the way Anki desktop does.
+
+It also prepares cards for the reader: large images are shrunk to grayscale, and buttons, scripts and hidden menus are left out, so cards are smaller and sync faster. Type-in cards show the expected answer on the back.
+
+**Set it up** (full steps in the server's README):
+
+1. Install Docker on the computer that will run it.
+2. Download the server from GitHub and make a `.env` file with a key of your choice (`MATCHA_TOKEN`, at least 16 random characters) and, if you want your AnkiWeb collection, your AnkiWeb login.
+3. Start it with `docker compose up -d`. It listens on port 8080.
+
+**Google Cloud:** the README also explains how to run it on a free-tier Google Cloud server with HTTPS, step by step with the `gcloud` command line tool. The key and your AnkiWeb login are kept in Google's Secret Manager there, not in a file.
+
+**On the reader** (Settings → Connectivity → Flashcards Sync, or the web settings page):
+
+- **Use Sync Server:** **On**.
+- **Server Address:** `http://<the computer's address>:8080` at home, or the `https://` address of a cloud server.
+- **Server Key:** the key from step 2.
+- **Anki Server:** **Sync Server**.
+
+Each sync also asks the server to sync with AnkiWeb, before and after the device's own sync, so reviews from your phone and the device meet. A server without an AnkiWeb login skips that. When AnkiWeb and the server cannot be merged (a full sync), the companion server takes AnkiWeb's copy on its own and adds back the reviews and words from the device it had not sent yet. With Anki desktop, Anki asks you which copy to keep: the device then stops before it sends anything and says so; choose in Anki, then sync again. If AnkiWeb cannot sync for another reason, for example while it is down, the device still syncs with the server and says AnkiWeb was not synced; the next sync tries again.
+
+Over the internet, use HTTPS so the key is not sent in the clear. HTTPS needs more memory on the reader: the X4 may not have enough during a sync, so on an X4 a server on your home network is the safer choice.
+
+The companion server is free for non-commercial use under the [CC BY-NC-SA 4.0](https://github.com/eszter007/matcha-anki-server/blob/main/LICENSE) licence: you may use, change and share it with credit, and changed versions must be shared under the same licence. For commercial use, ask first. The Anki library it uses keeps its own licence (AGPL-3.0).
+
+##### Migaku decks
+
+The [companion server](#the-companion-server) can also bring your [Migaku](https://migaku.com) decks to the device, next to your Anki decks or instead of them. The server signs in to Migaku with your account's email and password; an account that signs in only with Google or Apple does not work. See the [server's README](https://github.com/eszter007/matcha-anki-server) for its two settings. The server uses Migaku's own app protocol, which Migaku does not document, so a Migaku update can stop it working until the server is updated. On the reader (Settings → Connectivity → **Flashcards Sync**; the web settings page has the same rows except **Test Connection**):
+
+- **Migaku Server:** **Sync Server**, with **Use Sync Server** on and the companion server's address and key under it. If Anki uses Anki desktop instead, set **Anki Server** to **Anki Desktop** with Anki desktop's address. For Migaku only, set **Anki Server** to **Off**.
+- **Migaku Decks:** the decks to sync, separated by commas. Migaku decks are named with their language first, for example `French::My Cards` or `Japanese::Animals`.
+- **Mined Words To:** **Migaku** sends your mined words to Migaku instead of Anki. With only Migaku on, they go to Migaku anyway.
+- **Test Connection** checks the address and the key of each service that is on. The Migaku login is checked by the next sync.
+
+With Anki or Migaku set up, the last row of the Flashcards overview is **Sync Flashcards**. The title of the sync screen shows what it syncs: **Sync with Anki**, **Sync with Migaku**, or **Sync with Anki and Migaku** when both are set up. With both, Anki syncs first, then Migaku. On a reader without a touch screen it restarts between them (a short **Loading** screen), because after one sync there is not enough memory left for the second. If one fails, the other still syncs; the result shows both and names the first one that failed.
+
+- Each Migaku card shows Migaku's front. The back reads like a dictionary entry: the word with its pronunciation, word class and frequency stars when Migaku has them, the meaning, the sentence with its translation, the first image and the notes. Japanese and Chinese get furigana. Sound is left out. Course cards show only the word and its reading. A card too large for the device says to review it in Migaku.
+- Cards are due on the device when they are due in Migaku. Your reviews go to Migaku as Migaku reviews: **Again** counts as fail, **Hard**, **Good** and **Easy** as pass, and Migaku works out the next due date. The device keeps its own schedule for its next reviews, as with Anki.
+- Mined words become cards of Migaku's Sentence type, in one deck per language named like the device's (**Matcha::Français** and so on), made in Migaku when missing. Migaku can only make that deck in a language you have already used in Migaku once.
+- Nothing is ever deleted in Migaku by a sync. Migaku decks and Anki decks never mix on the device, even when they have the same name; the overview adds **(Migaku)** to a Migaku deck named like another deck.
+
+##### Offline reviews, synced with Anki on your computer
+
+You do not need AnkiWeb or any cloud service. The device can sync directly with Anki on your computer over your home Wi-Fi. You review offline on the device, wherever you are, and sync when you are back home. Nothing leaves your network.
+
+**Once, on the computer:**
+
+1. Install [Anki desktop](https://apps.ankiweb.net) 26.08 or later.
+2. Install the [AnkiConnect add-on](https://ankiweb.net/shared/info/2055492159): in Anki, choose **Tools → Add-ons → Get Add-ons…**, enter the code `2055492159` and choose **OK**. Restart Anki when it asks. AnkiConnect then shows in the **Add-ons** list.
+3. In that list, select **AnkiConnect** and choose **Config**. In the text that opens, change `"webBindAddress": "127.0.0.1"` to `"webBindAddress": "0.0.0.0"`, so the device can reach Anki on your Wi-Fi (with `127.0.0.1` only programs on the computer itself can). We recommend also setting `"apiKey"` to a password you choose, in quotes. Choose **OK**, then restart Anki.
+4. Find your computer's address on the Wi-Fi network, for example `192.168.1.20` (on a Mac: **System Settings → Wi-Fi → Details**; on Windows: `ipconfig`).
+5. If the computer asks whether Anki may accept incoming network connections, allow it.
+
+**Once, on the device** (easier on the web settings page in **File Transfer**):
+
+1. **Settings → Connectivity → Flashcards Sync → Anki Server:** **Anki Desktop**. Then **Anki Desktop Address:** `http://` + your computer's address + `:8765`, for example `http://192.168.1.20:8765`. (Without Migaku, **Use Sync Server** can be turned off.)
+2. **Anki Desktop Key:** the `apiKey` you chose, or empty if you set none.
+3. **Anki Decks:** the decks to review, separated by commas, as Anki shows them (a subdeck is `Parent::Child`).
+4. **Test Connection** checks the address, the key and the Anki version.
+
+If Anki on the computer is signed in to AnkiWeb, each sync also asks it to sync with AnkiWeb. If you do not use AnkiWeb, nothing changes.
+
+**Each time:**
+
+1. Open Anki on your computer. The device is on the same Wi-Fi.
+2. On the device, choose **Flashcards → Sync Flashcards**. New and changed cards come to the device. Your reviews from the device go to Anki with their real time. Anki also gets each card's next due date and interval and, if FSRS is on in Anki, the card's memory (stability and difficulty). Reviews you did in Anki come to the device.
+3. Review offline on the device. Your ratings are kept on the device until the next sync, however long that takes.
+
+If you review the same card in Anki and on the device between two syncs, both reviews are kept in the card's history.
+
+The commands and the server setup are in [docs/anki](docs/anki/README.md#anki-decks-on-the-reader).
+
 ## 7. Reading Insights
 
 Reading time is saved every five minutes and again when you close a book. If the battery runs out or the device
@@ -1804,11 +2044,14 @@ With the CrossPoint sync server, **Sync Progress** also uploads these insights; 
 
 ### 7.1 Insights
 
-Go to Home → **Insights**. It shows your current streak, minutes this week, minutes read today, your best day
-(the most minutes you read in one day, with its date), books finished, days read, total reading time, your
-longest streak and a calendar of the days you read. **Read today** and **Best day** count the reading on this
-reader. If you have not read yet today, the current streak counts up to yesterday; it only ends after a whole day
-with no reading.
+Go to Home → **Insights**. It shows your current streak, minutes today and this week, books finished, days read, total
+reading time, your longest streak and a calendar of the days you read. If you have not read yet today, the current streak counts up
+to yesterday; it only ends after a whole day with no reading. Under the month, the calendar names your best day, the day you
+read the most, and rings it when it is in the month shown.
+
+A book keeps its insights when you move or rename it, on the reader (including **Move Finished Books
+to Read Folder**) or on a computer: a book that opens with no history takes over the history of the
+book with the same file name that is no longer on the card.
 
 The tabs at the top split these numbers by language. **All** covers everything. After it comes one tab for each
 language you have read. Each tab has its own streak, calendar and totals, so reading an English book does not

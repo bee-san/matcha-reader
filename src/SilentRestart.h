@@ -18,6 +18,7 @@ void silentRestartToSettings(int section = -1);
 // A tab screen of the Cover Grid theme: a bottom-bar tab, or one of the Library's own tabs.
 void silentRestartToHomeTab(int homeTab);        // HomeTab value
 void silentRestartToLibraryTab(int libraryTab);  // LibraryTabs::Tab value
+void silentRestartToOpdsServers();               // File Transfer's OPDS server list
 
 // Straight into the Translation activity, re-reading the page text the activity
 // stashed at TRANSLATE_STASH_PATH before restarting. Used when the TLS/WiFi heap
@@ -38,6 +39,14 @@ inline std::string translateStashPath() { return sdsystem::path("translate_pendi
 // no-op on touch boards (a soft reset would cycle their externally-powered
 // rails); the caller then proceeds without a reboot.
 void silentRestartToJoinNetwork();
+
+// Between the services of one flashcard sync (Anki, then Migaku): a Wi-Fi session leaves too little
+// contiguous heap for the second. Restarts into the sync screen (AnkiSyncActivity::
+// resumeAfterRestart), which syncs the rest and shows both results. Does nothing where
+// silentRestartAvailable() is false.
+void silentRestartToFlashcardSync();
+// False on a touch board (a soft reset would cycle its rails) and while sleep is starting.
+bool silentRestartAvailable();
 
 // Reboots immediately after an activity releases exclusive raw storage. The
 // RTC target ensures setup() lands on Home instead of resuming a reader.

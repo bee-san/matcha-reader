@@ -43,13 +43,14 @@ constexpr unsigned long LONG_PRESS_MS = 1000;
 int HomeActivity::getMenuItemCount() const {
   // The cover grid's band is the six-entry tab bar (Home included, and no OPDS), not the classic
   // home menu, so its selector space is books followed by exactly those six.
-  int count = coverGridUi ? HomeTabBar::COUNT : 5;  // Library, Browse Files, File Transfer, Insights, Settings
+  int count = coverGridUi ? HomeTabBar::count() : 5;  // Library, Browse Files, File Transfer, Insights, Settings
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
-  if (hasLibrarySlot() && !coverGridUi) {
+  if (slotItem() != HomeMenuItem::NONE && !coverGridUi) {
     count++;
   }
+  if (showsFlashcards() && !coverGridUi) count++;
   return count;
 }
 
@@ -355,10 +356,10 @@ void HomeActivity::onEnter() {
   if (coverGridUi) coverGridUi->begin(recentBooks, hasOpdsServers, hasContinueReading);
 
   const auto base = static_cast<int>(recentBooks.size());
-  selectorIndex =
-      initialMenuItem == HomeMenuItem::NONE
-          ? 0
-          : base + (coverGridUi ? tabIndexFor(initialMenuItem) : menuItemToIndex(initialMenuItem, hasLibrarySlot()));
+  selectorIndex = initialMenuItem == HomeMenuItem::NONE
+                      ? 0
+                      : base + (coverGridUi ? tabIndexFor(initialMenuItem)
+                                            : menuItemToIndex(initialMenuItem, slotItem(), showsFlashcards()));
 
   // Trigger first update
   requestUpdate();
@@ -388,6 +389,7 @@ bool HomeActivity::storeCoverBuffer() {
     return false;
   }
   coverBufferSize = needed;
+  coverBufferInverted = display.isInverted();
   if (!renderer.copyRegionToBuffer(coverRectX, coverRectY, coverRectW, coverRectH, coverBuffer, coverBufferSize)) {
     free(coverBuffer);
     coverBuffer = nullptr;
@@ -456,26 +458,32 @@ void HomeActivity::loop() {
     if (coverGridUi) {
       // Tab band: the index IS the tab. Home is the screen we are on, so it falls through as a
       // no-op rather than rebuilding this activity under the user's finger.
-      if (menuIndex >= 0 && menuIndex < HomeTabBar::COUNT) {
-        HomeTabBar::activate(static_cast<HomeTab>(menuIndex), HomeTab::Home);
+      if (menuIndex >= 0 && menuIndex < HomeTabBar::count()) {
+        HomeTabBar::activate(HomeTabBar::tabAt(menuIndex), HomeTab::Home);
       }
       return;
     }
-    switch (indexToMenuItem(menuIndex, hasLibrarySlot())) {
+    switch (indexToMenuItem(menuIndex, slotItem(), showsFlashcards())) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
         break;
       case HomeMenuItem::LIBRARY:
         onLibraryOpen();
         break;
-      case HomeMenuItem::OPDS_BROWSER:  // the library slot
-        hasPlugins ? onPluginsOpen() : onOpdsBrowserOpen();
+      case HomeMenuItem::PLUGINS:
+        onPluginsOpen();
+        break;
+      case HomeMenuItem::OPDS_BROWSER:
+        onOpdsBrowserOpen();
         break;
       case HomeMenuItem::FILE_TRANSFER:
         onFileTransferOpen();
         break;
       case HomeMenuItem::READING_STATS:
         onStatsOpen();
+        break;
+      case HomeMenuItem::FLASHCARDS:
+        activityManager.goToFlashcards();
         break;
       case HomeMenuItem::SETTINGS_MENU:
         onSettingsOpen();
@@ -640,10 +648,13 @@ void HomeActivity::render(RenderLock&&) {
   std::vector<const char*> menuItems = {tr(STR_MENU_RECENT_BOOKS), tr(STR_BROWSE_FILES), tr(STR_FILE_TRANSFER),
                                         tr(STR_STATS), tr(STR_SETTINGS_TITLE)};
   std::vector<UIIcon> menuIcons = {Library, Folder, Transfer, Stats, Settings};
+  if (showsFlashcards()) {
+    menuItems.insert(menuItems.end() - 1, tr(STR_FLASHCARDS));
+    menuIcons.insert(menuIcons.end() - 1, UIIcon::Flashcards);
+  }
 
-  // One slot for network catalogs: the plugin list when any plugin is installed (it lists the
-  // OPDS servers too), the OPDS browser alone otherwise.
-  if (hasLibrarySlot()) {
+  // Plugins while the plugin system is on, else the OPDS browser when a server is set (see slotItem).
+  if (slotItem() != HomeMenuItem::NONE) {
     menuItems.insert(menuItems.begin() + 2, hasPlugins ? tr(STR_PLUGINS) : tr(STR_OPDS_BROWSER));
     menuIcons.insert(menuIcons.begin() + 2, hasPlugins ? Plugins : Library);
   }
@@ -696,7 +707,16 @@ void HomeActivity::render(RenderLock&&) {
       firstRenderDone = true;
       requestUpdate();
     }
+    renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH
+                                                                   : HalDisplay::FAST_REFRESH);
+    firstRenderDone = true;
     return;
+  }
+  // A cover snapshot from the other output polarity holds the other byte form (night mode keeps images pre-inverted so
+  // they stay positive): pasting it back after a theme switch showed the cover as a negative. Redraw it instead.
+  if (coverBufferStored && coverBufferInverted != display.isInverted()) {
+    freeCoverBuffer();
+    coverRendered = false;
   }
   bool bufferRestored = coverRendered && coverBufferStored && restoreCoverBuffer();
 
@@ -750,4 +770,6 @@ void HomeActivity::onStatsOpen() { activityManager.goToReadingStats(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
-void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(hasOpdsServers); }
+bool HomeActivity::showsFlashcards() { return SETTINGS.flashcardsTab != 0; }
+
+void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(); }

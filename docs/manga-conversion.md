@@ -7,15 +7,14 @@ device is in the [User Guide §6.6](../USER_GUIDE.md#66-manga-manhua-and-comics)
 ## In the browser (recommended)
 
 Open [**Matcha Reader Tools**](https://eszter007.github.io/matcha-reader-tools/), drop in the book (CBZ, ZIP or PDF), and copy the `.matcha` file it gives
-you anywhere on the SD card. For firmware older than 2.0.0-rc-4, pick **Matcha Reader, legacy folder** instead. Nothing to install. The OCR step sends panels to Gemini under your own key.
+you anywhere on the SD card. For firmware older than 2.0.0-rc-4, pick **Matcha Reader, legacy folder** instead. Nothing to install. Japanese and Chinese text is read in the browser; Gemini is an option for other languages and for translations.
 
 ## As a script
 
 For batch jobs, or the options below:
 
 ```bash
-pip install ultralytics huggingface_hub Pillow
-export GEMINI_API_KEY=$(cat /path/to/gemini.key)
+pip install ultralytics huggingface_hub Pillow onnxruntime numpy
 
 python3 tools/manga_convert/convert_manga.py \
   --input /path/to/manga.cbz \
@@ -24,7 +23,7 @@ python3 tools/manga_convert/convert_manga.py \
   --x4
 ```
 
-Set `--language` on every book. It splits your reading time by language, and it tells the OCR pass which language to expect. Most manga carries no language of its own. The tag is read at conversion time, so a book converted without it counts as unknown until you convert it again.
+Set `--language` on every book. It splits your reading time by language, and it tells Gemini which language to expect. Most manga carries no language of its own. The tag is read at conversion time, so a book converted without it counts as unknown until you convert it again.
 
 `--input` takes an image folder, `.cbz`, `.zip`, `.epub`, PDF, or a Mokuro volume's `.mokuro` file (see below). Pages can be JPEG, PNG, WebP, AVIF or BMP. WebP and AVIF are converted to JPEG, because the device cannot decode them. The flags worth knowing:
 
@@ -32,21 +31,31 @@ Set `--language` on every book. It splits your reading time by language, and it 
 | --- | --- |
 | `--x4` / `--x3` / `--device NAME` | Scale to the device screen. Smaller files, faster page turns, nothing lost. `--device` takes `x4`, `x4c`, `x4pro`, `sticky`, `papermono`, `picco`, `metalio` (all 480×800), `x3` (528×792), `eego` (EEGO Reader A4, 552×768) or `metalio4plus` (Metalio E-Ink 4 Plus, 684×1216). |
 | `--mono` | 1-bit dithered BMP. Good for line art, less so for heavy screentone. |
-| `--no-ocr` | Panel boxes only, no Gemini calls, no text or translations. |
+| `--ocr builtin` | Read the text on your computer (see below). Japanese and Chinese only, no translations. The default without a Gemini key. |
+| `--ocr gemini` | Send each panel to Gemini, which reads and translates it. Any language. The default when `--gemini-key-file` is given or `GEMINI_API_KEY` is set. |
+| `--no-ocr` | Panel boxes only, no text or translations. Same as `--ocr none`. |
 | `--ltr` | Read panels left-to-right, for western comics and strips. Default is manga order. |
 | `--trim-margins` | Crop the blank paper border and page number off scanned pages. |
 | `--webtoon` | Vertical-scroll manhwa or webcomic. Re-cuts the strip into screen-shaped pages. |
 | `--yonkoma` | 4-koma strips: read each column top to bottom, then the column to its left. |
+| `--no-yonkoma-detect` | Don't recognize 4-koma pages on their own (see below). |
+| `--split-spreads` | Cut every landscape page (a scanned two-page spread) into its two pages, in reading order. Not with Mokuro input or `--webtoon`. |
 | `--max-pages N` | Convert the first N pages as a cheap test. |
 | `--title` / `--author` | Override metadata. |
 | `--language` | Book language tag. See above. |
 | `--series` / `--series-index` | Series name and volume number. Read from a CBZ's ComicInfo (`<Series>`, `<Number>`) or an EPUB's series metadata when present. Sent with your progress to sync servers set to **Other**. |
 
-Panels are found with a YOLO model trained on Manga109 ([leoxs22/manga-panel-detector-yolo26n](https://huggingface.co/leoxs22/manga-panel-detector-yolo26n)), falling back to a white-gutter heuristic without `ultralytics`. Gemini then reads and translates each panel.
+Panels are found with a YOLO model trained on Manga109 ([leoxs22/manga-panel-detector-yolo26n](https://huggingface.co/leoxs22/manga-panel-detector-yolo26n)), falling back to a gutter heuristic without `ultralytics`: it cuts the page along its white or black gutters, one region at a time, so a tall panel beside two stacked ones is found too. The model looks at each page at full resolution, before it is reduced to your screen, so thin gutters are not lost.
+
+### Reading the text
+
+By default the text is read on your computer with [PP-OCRv6_manga](https://huggingface.co/Kellenok/PP-OCRv6_manga) (Apache-2.0), a PaddleOCR model fine-tuned on manga. It reads Japanese and Chinese, keeps every printed column, and drops furigana and page numbers. The first run downloads 12 MB of models into `~/.cache/matcha-reader/`; after that each page takes a second or two and nothing leaves your computer. There are no translations. This is the same recogniser the browser tools use, so both give the same text.
+
+With `--ocr gemini` (or a Gemini key given), each panel is sent to Gemini under your own key instead. Gemini reads any language and adds an English translation per panel.
 
 ### Manga already read by Mokuro
 
-[Mokuro](https://github.com/kha-white/mokuro) volumes already have their text read, so they need no Gemini key. Point `--input` at the `.mokuro` file. Its image folder must sit next to it with the same name, as Mokuro writes it:
+[Mokuro](https://github.com/kha-white/mokuro) volumes already have their text read, so it is used as it is. Point `--input` at the `.mokuro` file. Its image folder must sit next to it with the same name, as Mokuro writes it:
 
 ```bash
 python3 tools/manga_convert/convert_manga.py \
@@ -55,13 +64,23 @@ python3 tools/manga_convert/convert_manga.py \
   --x4
 ```
 
-The text, its boxes and every printed column come from Mokuro, so word lookup in the speech bubbles works as with Gemini. Panels are still found on your computer, so panel zoom works too. There are no translations. The title comes from the `.mokuro` file (series name and volume), and the language is set to Japanese.
+The text, its boxes and every printed column come from Mokuro, so word lookup in the speech bubbles works as with the other options. Panels are still found on your computer, so panel zoom works too. There are no translations. The title comes from the `.mokuro` file (series name and volume), and the language is set to Japanese.
+
+A whole Mokuro library converts in one go with `convert_mokuro_library.py`. A library is a folder of series, each a folder or a `.zip`/`.cbz` holding its volumes (`vol1.mokuro` beside `vol1/`; `vol1.mo.mokuro` with `vol1/` works too). Every volume becomes `<output-dir>/<series>/<volume>.matcha`:
+
+```bash
+python3 tools/manga_convert/convert_mokuro_library.py --library ~/Mokuro --list
+python3 tools/manga_convert/convert_mokuro_library.py --library ~/Mokuro \
+  --output-dir /path/to/sd/manga --series "yotsuba" --device x4 -- --mono
+```
+
+`--list` shows the series it found and how many volumes each has. `--series` picks series by part of their name or a glob, and can be repeated. Volumes that already have a `.matcha` are skipped, so a run that stopped picks up where it left off; `--force` converts them again. Each book is written under a hidden name and renamed only when it is complete, so the reader never sees half a book, even when the output is the SD card itself. Several volumes convert at once (`--jobs`). Anything after `--` goes to `convert_manga.py` as it is. An archive that cannot be opened, usually an unfinished download, is named at the start and skipped.
 
 Western comics work too. Pass `--ltr` so panels within a row are walked left-to-right. The panel detector was trained on manga but handles strip layouts well; page turn direction is a device setting (Reversed page turn), not a conversion one.
 
-OCR follows `--language`, so it works on any of them. The prompt names the language it should expect, which is what stops the model hallucinating Japanese out of a German speech bubble, and a book already in English gets transcription without a pointless English-to-English translation. Set the tag even if you don't care about reading stats.
+With `--ocr gemini`, OCR follows `--language`, so it works on any of them. The prompt names the language it should expect, which is what stops the model hallucinating Japanese out of a German speech bubble, and a book already in English gets transcription without a pointless English-to-English translation. Set the tag even if you don't care about reading stats.
 
-Yonkoma (4-koma) needs `--yonkoma`. A 4-koma page is columns of four panels, read down one column and then down the next, where ordinary manga reads across the page. Without the flag the two strips are interleaved: panel 1, the top panel of the *other* strip, panel 2, and so on. The flag swaps the axes of the ordering rule (a tier becomes a column) so a title page whose left half is one full-height illustration beside a strip of four still comes out right, the illustration being a column of its own. Columns run right to left, or left to right with `--ltr`.
+Yonkoma (4-koma) pages are recognized one by one: a page whose panels form two or more side-by-side strips (three or more equal-height panels sharing their left and right edges) is read strip by strip, so the 4-koma extras bound into an ordinary volume come out right without any flag. A strip panel the detector cut in two is merged back. For a whole book of strips that detection misses, use `--yonkoma`. A 4-koma page is columns of four panels, read down one column and then down the next, where ordinary manga reads across the page. Without the flag the two strips are interleaved: panel 1, the top panel of the *other* strip, panel 2, and so on. The flag swaps the axes of the ordering rule (a tier becomes a column) so a title page whose left half is one full-height illustration beside a strip of four still comes out right, the illustration being a column of its own. Columns run right to left, or left to right with `--ltr`.
 
 Manhwa and other vertical-scroll webcomics need `--webtoon`. A webtoon is one continuous strip, and distributors ship it pre-sliced into fixed-height tiles whose cuts land wherever the slicer's counter reached, often through a face. This reassembles the strip and re-cuts it at the artwork's own gutters into pages shaped to your screen, so no page opens or closes mid-panel. Panels are then the art blocks between gutters, read top to bottom, and the manga panel detector is skipped: it looks for bordered rectangles in a grid and there are none. A 48-tile chapter came out as 42 pages filling 90% of the screen on average.
 

@@ -3,8 +3,9 @@
 
 A library is a folder of series. Each series is either a .zip/.cbz archive or a folder, holding one
 `<volume>.mokuro` file per volume beside a `<volume>/` folder of page images -- the layout mokuro
-writes. Every volume becomes `<output-dir>/<series>/<volume>.matcha` through convert_manga.py, which
-takes the text and line boxes from the .mokuro file instead of calling Gemini.
+writes (a volume named `<volume>.mo.mokuro` may keep its images in `<volume>/`). Every volume
+becomes `<output-dir>/<series>/<volume>.matcha` through convert_manga.py, which takes the text and
+line boxes from the .mokuro file instead of reading the pages again.
 
 Volumes that already have a .matcha are skipped, so an interrupted run resumes where it stopped. A
 volume is written under a hidden name and renamed only once it is complete, so the device never
@@ -49,7 +50,7 @@ RESERVED_PASSTHROUGH = {"--legacy", "--max-pages", "--device", "--x3", "--x4", "
 @dataclass
 class Volume:
     series: str
-    name: str        # the .mokuro file's stem
+    name: str        # the .mokuro file's stem, without a ".mo" before .mokuro
     source: Path     # the archive, or the .mokuro file in a series folder
     member: str = ""  # path of the .mokuro file inside the archive
 
@@ -102,10 +103,10 @@ def find_volumes(library: Path, unreadable: list[str]) -> list[Volume]:
                 unreadable.append(entry.name)
                 continue
             for member in sorted(members):
-                volumes.append(Volume(entry.stem, Path(member).stem, entry, member))
+                volumes.append(Volume(entry.stem, image_dirs(Path(member).stem)[-1], entry, member))
         elif entry.is_dir():
             for mokuro in sorted(entry.rglob("*" + MOKURO_SUFFIX)):
-                volumes.append(Volume(entry.name, mokuro.stem, mokuro))
+                volumes.append(Volume(entry.name, image_dirs(mokuro.stem)[-1], mokuro))
     return volumes
 
 
@@ -117,15 +118,21 @@ def matches(series: str, patterns: list[str]) -> bool:
                for p in patterns)
 
 
+def image_dirs(stem: str) -> list[str]:
+    """Folder names a volume's images may sit in: the .mokuro file's stem, and for
+    `<volume>.mo.mokuro` (as some mokuro setups name it) also `<volume>`."""
+    return [stem, stem[:-3]] if stem.endswith(".mo") else [stem]
+
+
 def extract_volume(volume: Volume, work_dir: Path) -> Path:
     """Extract one volume's .mokuro file and image folder; returns the extracted .mokuro path."""
-    image_prefix = volume.member[: -len(MOKURO_SUFFIX)] + "/"
+    prefixes = tuple(d + "/" for d in image_dirs(volume.member[: -len(MOKURO_SUFFIX)]))
     with zipfile.ZipFile(volume.source) as zf:
         for info in zf.infolist():
             name = info.filename
             if info.is_dir() or not _safe_member(name):
                 continue
-            if name != volume.member and not name.startswith(image_prefix):
+            if name != volume.member and not name.replace("\\", "/").startswith(prefixes):
                 continue
             target = work_dir.joinpath(*name.replace("\\", "/").split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)

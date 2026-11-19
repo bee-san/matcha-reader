@@ -283,9 +283,18 @@ class SdCardFontSystem {
   // text (book titles, list rows, menus, status bar) in scripts the built-in
   // fonts lack renders in the chosen TTF. Mirrors setupUiFallbacks for .cpfont.
   void setupTtfUiFallbacks(GfxRenderer& renderer);
-  // Open one style source file (resident if small, streamed if large) into
-  // ttfSources_[style]. Returns false on open/read failure.
+  // Open one style source file, streamed from SD, into ttfSources_[style]. Returns false on
+  // open/read failure.
   bool openTtfSource(uint8_t style, const std::string& path);
+  // Opens `path` into `source`; openTtfSource() and the companion use it.
+  struct TtfSource;
+  // Streams the file from SD (its first 1 MB cached in PSRAM). keepResident instead reads a file of
+  // up to 6 MB whole into RAM when the heap allows: the CJK companion, whose glyphs every page faults.
+  bool openTtfSourceInto(TtfSource& source, const std::string& path, bool keepResident = false);
+  // A vector CJK extension (NotoSerifJP.ttf) as the CJK companion: the .cpfont manager cannot
+  // load it, so it goes through the FreeInkFont engine like the selected TTF does.
+  bool loadCompanionTtf(const SdCardFontFamilyInfo& family, GfxRenderer& renderer, uint8_t pointSize);
+  void unloadCompanionTtf(GfxRenderer& renderer);
   // Register every present source with `font` (shared bytes / file handles).
   void addTtfSources(TtfEpdFont& font);
   // Close/free all style sources.
@@ -357,13 +366,20 @@ class SdCardFontSystem {
   // UI-size TTF fallbacks (share ttfSources_); parallel to their renderer font ids.
   std::vector<std::unique_ptr<TtfEpdFont>> ttfUi_;
   std::vector<int> ttfUiIds_;
-  // Panel-size faces for a word lookup session (body and header); share ttfSources_.
+  // Panel-size faces for a word lookup session (body and header): sized variants of ttf_ that
+  // share its FreeType faces, so they must be freed before ttf_ is reloaded or freed.
   struct TtfLookupFace {
     std::unique_ptr<TtfEpdFont> font;
     int fontId = 0;
     uint8_t pointSize = 0;
   };
   TtfLookupFace ttfLookup_[2];
+  // The CJK companion when it is a vector family (see loadCompanionTtf).
+  std::unique_ptr<TtfEpdFont> companionTtf_;
+  TtfSource companionTtfSource_;
+  std::string companionTtfFamily_;
+  int companionTtfFontId_ = 0;
+  uint8_t companionTtfPointSize_ = 0;
 #endif  // CROSSPOINT_VECTOR_FONTS
 };
 

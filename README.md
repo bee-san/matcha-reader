@@ -25,7 +25,7 @@ This page is the short version. How to use everything is in the [User Guide](USE
 
 ## Word lookup, sentence mining and page translation
 
-Look up any word on the page, in vertical or horizontal text. In Japanese and Chinese the page is split into words first. The cursor only lands on words that have an entry. The definition opens in a panel over the page. On touch devices, long-press a word to open it. See [Guide §6.1](USER_GUIDE.md#61-word-lookup).
+Look up any word on the page, in vertical or horizontal text. In Japanese and Chinese the page is split into words first. The cursor only lands on words that have an entry. The definition opens in a panel over the page. On touch devices, long-press a word to open it. Words inside an entry, such as those in an example sentence, can be looked up the same way. See [Guide §6.1](USER_GUIDE.md#61-word-lookup).
 
 <p align="center">
   <img src="docs/images/screenshots/word-lookup.png" width="260" alt="Word lookup panel over a vertical page of たのしいムーミン一家: 用意 with its reading, part of speech, definition and an example sentence">
@@ -33,9 +33,28 @@ Look up any word on the page, in vertical or horizontal text. In Japanese and Ch
   <img src="docs/images/screenshots/word-lookup-chinese.png" width="260" alt="Word lookup panel over a page of 紅樓夢: 繁華 with pinyin and zhuyin, both scripts and two senses">
 </p>
 
-**Sentence mining.** Save a word with its sentence to a CSV per language that Anki imports as is. See [Guide §6.1](USER_GUIDE.md#sentence-mining).
+**Sentence mining.** Save a word with its sentence to a CSV per language that Anki imports as is. With Anki sync set up, **Sync Flashcards** sends new words to Anki as notes, one deck per language, with their review progress (or to Migaku instead, if you choose; see [Migaku decks](USER_GUIDE.md#migaku-decks)). Japanese words also get their furigana per kanji, from the book or the dictionary. See [Guide §6.1](USER_GUIDE.md#sentence-mining).
 
-**Page translation.** Translates the page to English with Gemini, in the same panel. Needs Wi-Fi and your own API key. See [Guide §6.2](USER_GUIDE.md#62-page-translation).
+**Flashcards.** Review the words you saved right on the device, one deck per language, scheduled with FSRS. Each card shows the word on a spine and the sentence you found it in. Japanese cards read vertically, with the reading beside each kanji on the back. Turn it on in Settings → Flashcards. See [Guide §6.8](USER_GUIDE.md#68-flashcards).
+
+**Anki decks.** Review your Anki decks on the device, each card drawn with its own template at your reader font size. You can import an exported `.apkg` in your browser with the [Anki Converter](https://eszter007.github.io/matcha-reader-tools/anki.html), or sync both ways with Anki desktop or the self-hosted [companion server](https://github.com/eszter007/matcha-anki-server), which also runs on a free Google Cloud server. Sync works over your home Wi-Fi without AnkiWeb, so you can review offline and sync when you are back. Sync is optional. Sync follows your Anki deck options (daily limits, learning steps, burying, Easy Days, leeches), and a change to a note type's template or style downloads that deck again. Boards with PSRAM keep larger decks, cards and images. See [Guide §6.8](USER_GUIDE.md#anki-decks).
+
+**Migaku decks.** The companion server can also sync your Migaku decks, next to Anki or instead of it: cards are due when Migaku says so, and your reviews and mined words go back to Migaku. Both share one server setting, under **Settings → Connectivity → Flashcards Sync**. See [Migaku decks](USER_GUIDE.md#migaku-decks).
+
+<p align="center">
+  <img src="docs/images/screenshots/flashcards-anki-decks.png" width="200" alt="The Flashcards tab: Anki decks such as HSK 1, Kaishi 1.5k and the Open Anki JLPT N5 deck next to the reader's own decks, with a Sync Flashcards button under the list">
+  <img src="docs/images/screenshots/flashcard-anki-hsk.png" width="200" alt="Back of a card from an HSK 1 Anki deck, drawn with the deck's own template: 的 with zhuyin and pinyin">
+</p>
+
+<p align="center">
+  <img src="docs/images/screenshots/flashcard-french.png" width="200" alt="Front of a French flashcard: flâner on the spine and the sentence from L'Étranger with the word in bold">
+  <img src="docs/images/screenshots/flashcard-chinese.png" width="200" alt="Back of a Chinese flashcard: 麻煩 with pinyin and zhuyin, two senses and the sentence from 小王子">
+  <img src="docs/images/screenshots/flashcard-japanese.png" width="200" alt="Back of a Japanese flashcard: 木漏れ日 on the spine with こ, も and び beside their kanji, the definition and the sentence from ノルウェイの森">
+</p>
+
+**Vocabulary history.** Optionally keep every word you look up, in any language and in manga, in `Vocabulary.txt` on the SD card. See [Guide §6.1](USER_GUIDE.md#vocabulary-history).
+
+**Page translation.** Translates the page with Gemini, into English or a language you pick in the settings, in the same panel. Needs Wi-Fi and your own API key. See [Guide §6.2](USER_GUIDE.md#62-page-translation).
 
 <p align="center"><img src="docs/images/screenshots/translate-page.png" width="260" alt="A page translation in the floating panel"></p>
 
@@ -97,7 +116,7 @@ Any StarDict dictionary works, picked by the book's language. A missed lookup is
 
 ### Manga, manhua and comics
 
-Read panel by panel, each scaled to the screen, and look up words in the speech bubbles offline. Convert a CBZ, ZIP or PDF in the browser with [Matcha Reader Tools](https://eszter007.github.io/matcha-reader-tools/) and copy the `.matcha` file to the card. Manga already read with Mokuro converts with [the script](docs/manga-conversion.md#manga-already-read-by-mokuro), no Gemini key needed. See [Guide §6.6](USER_GUIDE.md#66-manga-manhua-and-comics).
+Read panel by panel, each scaled to the screen, and look up words in the speech bubbles offline. Convert a CBZ, ZIP or PDF in the browser with [Matcha Reader Tools](https://eszter007.github.io/matcha-reader-tools/) and copy the `.matcha` file to the card. Japanese and Chinese text is read on your computer; Gemini is optional. Manga already read with Mokuro converts with [the script](docs/manga-conversion.md#manga-already-read-by-mokuro), one volume or a whole library at a time. See [Guide §6.6](USER_GUIDE.md#66-manga-manhua-and-comics).
 
 Manga already processed by [mokuro](https://github.com/kha-white/mokuro) converts without Gemini, one volume at a time in [bee-san's Matcha Reader Tools](https://bee-san.github.io/matcha-reader-tools/manga.html) (choose the series zip, pick a volume), or with `tools/manga_convert/convert_manga.py`, which takes a `<volume>.mokuro` file and uses mokuro's own text and line boxes, so looking up single words in the bubbles works straight away. `tools/manga_convert/convert_mokuro_library.py` converts a whole folder of mokuro series at once. See [Guide §6.6](USER_GUIDE.md#converting-mokuro-manga).
 
@@ -123,7 +142,7 @@ A cover grid of every book on the card, with a **Shelves** tab for folders and a
 
 <p align="center">
   <img src="docs/images/screenshots/tab-home.png" width="150" alt="Home tab: the cover grid">
-  <img src="docs/images/screenshots/library.png" width="150" alt="Library tab, with Books, Shelves, OPDS and Files">
+  <img src="docs/images/screenshots/library.png" width="150" alt="Library tab, with Books, Shelves and Files">
   <img src="docs/images/screenshots/tab-transfer.png" width="150" alt="File Transfer tab">
   <img src="docs/images/screenshots/insights.png" width="150" alt="Insights tab, with a tab per language">
   <img src="docs/images/screenshots/tab-settings.png" width="150" alt="Settings tab">
@@ -131,7 +150,7 @@ A cover grid of every book on the card, with a **Shelves** tab for folders and a
 
 ### Reading insights
 
-Streak, minutes this week, books finished and a calendar, split by language. Each book has its own insights, and finishing one shows a summary. The **Insights** sleep screen shows them on a split-flap board. With the CrossPoint sync server they sync across devices and come back to a reset device. See [Guide §7](USER_GUIDE.md#7-reading-insights) and [§3.7](USER_GUIDE.md#37-sleep-screen).
+Streak, minutes today and this week, your best day, books finished and a calendar, split by language. Each book has its own insights, and finishing one shows a summary. The **Insights** sleep screen shows them on a split-flap board. With the CrossPoint sync server they sync across devices and come back to a reset device. See [Guide §7](USER_GUIDE.md#7-reading-insights) and [§3.7](USER_GUIDE.md#37-sleep-screen).
 
 <p align="center">
   <img src="docs/images/screenshots/insights.png" width="240" alt="Insights with streak, insight cards and calendar">
@@ -148,14 +167,14 @@ A wallpaper over the page you were reading. The book shows through. See [Guide �
 
 ### Also in this fork
 
-- Jump Back: after a jump (to a chapter, a percentage, a bookmark or a clipping, or with Chapter Skip), the reader menu shows **Jump Back** at the top, with where it leads: a percentage in books, a page in manga. Choose it to return; choose it again to undo. It is kept through sleep and when you reopen the book. Books and manga, not XTC
-- Last 5 pages read: the reader menu (and the toolbar's More panel) lists the last five places you read in the book, such as "Page 396 - 12:32 PM". Turning pages keeps one place; a jump, a link or a sync starts a new one. Choose a place to go back there. Kept through sleep and when you reopen the book. Books only
-- Insights shows the minutes you read today and your best day: the most minutes read in one day, with its date
+- Jump Back and Recent Pages: after a jump (to a chapter, a percentage, a bookmark or a clipping, or with Chapter Skip), the reader menu shows **Jump Back** under Select Chapter, with the percentage it leads to; choose it again to undo. **Recent Pages** lists the last places you read, as "Chapter · Page 3 · 21:14" (the page within the chapter). In the full-screen menu and the toolbar's More panel; kept through sleep. Books, not manga or XTC
 - Clippings and highlights work in vertical text too
 - Translate the selected text from the touch selection bar
 - Optimize EPUB on upload: splits single-file novels into chapters and fits images to the screen
+- Updating an EPUB, TXT or Markdown book keeps your place: upload or copy a new version under the same file name
+- Publisher fonts on boards with PSRAM (X4 Pro and others): a book can be drawn in the fonts it ships, horizontal and vertical
 - Japanese and Chinese interface language support
-- A light schedule (X4 Pro and other frontlit devices): the light comes on dim, and warm where the light supports it, at night, either at set times or from sunset to sunrise at your city, and goes off in the morning. See [Guide §1](USER_GUIDE.md#light-schedule)
+- Light Schedule (X4 Pro and other devices with a frontlight): the light turns on dim and warm at night, at set times or from sunset to sunrise in your city, and turns off in the morning. See [Guide §1](USER_GUIDE.md#light-schedule)
 
 ## Setup
 

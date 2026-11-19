@@ -3,6 +3,7 @@
 #include <SentenceMiningCsv.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -24,6 +25,13 @@ struct BookContext {
   std::string bookLanguage;
   // The book's identity in BookStats, which counts lookups and saved sentences per book.
   std::string bookPath;
+  // Where the lookup was made, for vocabulary history. Unknown: empty, 0, or UINT32_MAX.
+  std::string chapter;
+  std::string series;
+  std::optional<float> seriesIndex;
+  uint16_t page = 0;  // 1-based page in the chapter
+  uint16_t spine = 0;
+  uint32_t startOffset = UINT32_MAX;
 };
 
 // A card waiting for its definition, handed from a word-select screen to the definition screen,
@@ -42,6 +50,11 @@ enum class SaveResult : uint8_t { Saved, AlreadySaved, Failed };
 // in another sentence is a new card. Anki's header lines go first when the file is new. One file
 // per language, so each imports into its own deck. A file is only ever extended.
 SaveResult saveOnce(const Card& card, std::string_view language);
+
+// Brings a sentence file written before the Furigana column to the current layout, in place.
+// True when the file is current (or absent); false when a legacy file could not be rewritten,
+// in which case it is left as it was.
+bool upgradeExport(const std::string& path);
 
 // Today's date as YYYY-MM-DD, or empty when the device has no idea what day it is.
 std::string today();

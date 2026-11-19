@@ -13,6 +13,7 @@
 #include <OpdsFeedParser.h>
 #include <OpdsPublicationDoc.h>
 #include <OpdsSearchTemplate.h>
+#include <ResumableFetch.h>
 #include <StreamingJsonParser.h>
 #include <Util.h>
 #include <WolfsslCrypto.h>
@@ -42,6 +43,7 @@
 namespace fui = freeink::ui;
 
 namespace {
+constexpr unsigned long GO_HOME_MS = 1000;
 // ACTION_PAGE values: which pagination link a tab follows.
 constexpr int16_t PAGE_FIRST = 0;
 constexpr int16_t PAGE_PREV = 1;
@@ -276,19 +278,9 @@ void OpdsBookBrowserActivity::buildBrowsingScreen(UiScreen& screen) {
   screen.list(props);
 }
 
-void OpdsBookBrowserActivity::buildTopBand(UiScreen& screen) {
-  LibraryTabs::buildBand(screen, renderer, LibraryTabs::Opds, topBandFocused, mappedInput.hasTouch(), ACTION_TAB);
-}
-
-void OpdsBookBrowserActivity::onTabAction(const int index) {
-  if (state == State::DOWNLOADING) return;
-  app.clearTapFlash();
-  goToLibraryTab(index);
-}
-
 void OpdsBookBrowserActivity::restartAfterWifi() {
-  if (exitTarget >= LIBRARY_TAB_BASE) {
-    silentRestartToLibraryTab(exitTarget - LIBRARY_TAB_BASE);
+  if (exitTarget == EXIT_TO_OPDS_SERVERS) {
+    silentRestartToOpdsServers();
   } else if (exitTarget >= 0) {
     silentRestartToHomeTab(exitTarget);
   } else {
@@ -297,30 +289,29 @@ void OpdsBookBrowserActivity::restartAfterWifi() {
 }
 
 void OpdsBookBrowserActivity::leaveBrowser() {
-  // In the Cover Grid theme the browser is entered from the Library's OPDS tab, so it returns there.
-  if (hasTabBar()) {
-    goToLibraryTab(LibraryTabs::Opds);
+  if (!hasTabBar()) {
+    onGoHome();
     return;
   }
-  onGoHome();
-}
-
-void OpdsBookBrowserActivity::goToLibraryTab(const int tab) {
-  exitTarget = LIBRARY_TAB_BASE + tab;
-  LibraryTabs::activate(tab);
+  // File Transfer skips the server list when there is exactly one server (goToBrowser), so Back
+  // from that catalog returns to File Transfer rather than to a list it never showed.
+  if (OPDS_STORE.getServers().size() == 1) {
+    goToHomeTab(static_cast<int>(HomeTab::Transfer));
+    return;
+  }
+  exitTarget = EXIT_TO_OPDS_SERVERS;
+  activityManager.goToOpdsServers();
 }
 
 void OpdsBookBrowserActivity::goToHomeTab(const int tab) {
   exitTarget = tab;
-  if (tab == static_cast<int>(HomeTab::Library)) {
-    goToLibraryTab(LibraryTabs::Books);
-    return;
-  }
-  HomeTabBar::activate(static_cast<HomeTab>(tab), HomeTab::Library);
+  // HomeTab::Count as the current tab: the catalog's own tab (Transfer) is a destination too,
+  // File Transfer's first screen.
+  HomeTabBar::activate(static_cast<HomeTab>(tab), HomeTab::Count);
 }
 
 void OpdsBookBrowserActivity::drawFooter() {
-  // As the Library's OPDS tab the bottom bar takes the place of the button hints.
+  // Under File Transfer the bottom bar takes the place of the button hints.
   if (hasTabBar()) {
     UiListActivity::drawFooter();
     return;
@@ -529,7 +520,8 @@ void OpdsBookBrowserActivity::navigateToEntry(const OpdsEntry& entry) {
 }
 
 void OpdsBookBrowserActivity::onBackButton() {
-  if (state == State::CHECK_WIFI || navigationHistory.empty()) {
+  // Holding Back leaves the catalog from any depth.
+  if (state == State::CHECK_WIFI || navigationHistory.empty() || mappedInput.getHeldTime() >= GO_HOME_MS) {
     leaveBrowser();
     return;
   }
@@ -586,7 +578,7 @@ bool OpdsBookBrowserActivity::verifyAndRegisterEpub(const std::string& filename)
     fail(StrId::STR_OPDS_NOT_A_BOOK);
     return false;
   }
-  clearBookCache(filename);
+  clearBookContentCache(filename);
   library::markLibraryIndexDirty();
   return true;
 }
@@ -631,12 +623,35 @@ void OpdsBookBrowserActivity::downloadBook(const OpdsEntry& book) {
   // the current feed when the transfer finishes.
   releaseEntries();
 
-  const freeink::opds::HttpAuth dlAuth = opdsClient.downloadAuth();
-  std::vector<HttpDownloader::Header> headers = dlAuth.headers;
-  if (!dlAuth.bearer.empty()) headers.push_back({"Authorization", "Bearer " + dlAuth.bearer});
-  // downloadFile() (CatalogActivity) releases font caches, checks the TLS heap
-  // floor, and pumps cancel input during the transfer.
-  const auto result = downloadFile(downloadUrl, filename, dlAuth.username, dlAuth.password, headers);
+  HttpDownloader::DownloadError result;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    {
+      const freeink::opds::HttpAuth dlAuth = opdsClient.downloadAuth();
+      std::vector<HttpDownloader::Header> headers = dlAuth.headers;
+      if (!dlAuth.bearer.empty()) headers.push_back({"Authorization", "Bearer " + dlAuth.bearer});
+      result = downloadFile(downloadUrl, filename, dlAuth.username, dlAuth.password, headers);
+    }
+    if (attempt != 0 || result != HttpDownloader::UNAUTHORIZED || HttpDownloader::lastStatus() != 401 ||
+        HttpDownloader::lastAnswerRedirected() ||
+        freeink::fetchOrigin(downloadUrl) != freeink::fetchOrigin(server.url) || cancelDownload)
+      break;
+    std::string title;
+    {
+      RenderLock lock;
+      title = std::move(statusMessage);
+    }
+    const bool authenticated = opdsClient.authenticateDownload(downloadUrl);
+    {
+      RenderLock lock;
+      statusMessage = std::move(title);
+    }
+    if (opdsClient.tokensDirty()) persistTokens();
+    if (cancelDownload) {
+      result = HttpDownloader::ABORTED;
+      break;
+    }
+    if (!authenticated) break;
+  }
 
   if (result == HttpDownloader::OK && !verifyAndRegisterEpub(filename)) return;
   finishDownload(result);
@@ -1053,7 +1068,10 @@ const char* OpdsBookBrowserActivity::acquireLabel(const OpdsAvailability& av) co
 // frozen on the previous message.
 void OpdsBookBrowserActivity::onClientStatus(void* ctx, const freeink::opds::ClientPhase phase) {
   auto* self = static_cast<OpdsBookBrowserActivity*>(ctx);
-  self->statusMessage = phase == freeink::opds::ClientPhase::SigningIn ? tr(STR_OPDS_SIGNING_IN) : tr(STR_LOADING);
+  {
+    RenderLock lock;
+    self->statusMessage = phase == freeink::opds::ClientPhase::SigningIn ? tr(STR_OPDS_SIGNING_IN) : tr(STR_LOADING);
+  }
   self->requestUpdate(true);
 }
 

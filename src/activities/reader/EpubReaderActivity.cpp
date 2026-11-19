@@ -18,6 +18,7 @@
 #include <HalDisplay.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -38,16 +39,17 @@
 #include <limits>
 #include <numeric>
 
+#include "../../BookFonts.h"
 #include "../../util/BookmarkFile.h"
 #include "BookmarkEntry.h"
 #include "ChapterBuildGate.h"
+#include "ChapterListActivity.h"
 #include "ClipSelectionActivity.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "DictionaryWordSelectActivity.h"
 #include "EpubReaderBookmarksActivity.h"
-#include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderClippingListActivity.h"
 #include "EpubReaderFootnotesActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
@@ -79,6 +81,7 @@
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BookInsights.h"
 #include "util/BookProgress.h"
 #include "util/BookmarkUtil.h"
 #include "util/DictionaryRegistry.h"
@@ -355,14 +358,21 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
   }
 
   RECENT_BOOKS.updatePath(srcPath, dstPath, oldCachePath, cacheMoved ? newCachePath : oldCachePath);
+  // Bookmarks and insights are filed under the book path as well.
+  const std::string oldMarks = BookmarkUtil::getBookmarkPath(srcPath);
+  if (Storage.exists(oldMarks.c_str()) &&
+      !Storage.rename(oldMarks.c_str(), BookmarkUtil::getBookmarkPath(dstPath).c_str())) {
+    LOG_ERR("ERS", "Failed to move bookmarks of %s (non-fatal)", srcPath.c_str());
+  }
+  bookinsights::followMove(srcPath, dstPath);
   if (APP_STATE.openEpubPath == srcPath) {
     APP_STATE.openEpubPath = dstPath;
     APP_STATE.saveToFile();
   }
 }
 
-// A button contact is closed right now. Reads the Xteink ADC ladder, power pin, and T5S3 expander
-// key only; on other boards a press stops the build once the loop has debounced it.
+// A button contact is closed right now (HalGPIO::rawInputActive()). Input it cannot read stops the
+// build once the loop has debounced it.
 bool buttonContactClosed() { return gpio.rawInputActive(); }
 
 }  // namespace
@@ -522,6 +532,7 @@ bool EpubReaderActivity::loadBook() {
   }
 
   epub = makeUniqueNoThrow<Epub>(bookPath, "/.crosspoint");
+  vocabularyMetadataBook = nullptr;
   if (!epub) {
     LOG_ERR("READER", "Failed to allocate EPUB object");
     return false;
@@ -598,6 +609,7 @@ void EpubReaderActivity::onReaderEnter() {
   // Smart sync moves to another device's position without asking, before the saved one is read.
   if (KOREADER_STORE.getSyncBehavior() == KOReaderSyncBehavior::SMART) writeSyncedPosition();
 
+  bool progressLoaded = false;
   HalFile f;
   if (Storage.openFileForRead("ERS", epub->getCachePath() + "/progress.bin", f)) {
     // Fork layout: [0-5] spine/page/count, [6] vertical, [7] furigana, [8] percent,
@@ -613,6 +625,7 @@ void EpubReaderActivity::onReaderEnter() {
              (static_cast<uint32_t>(data[at + 2]) << 16) | (static_cast<uint32_t>(data[at + 3]) << 24);
     };
     if (dataSize >= 4) {
+      progressLoaded = true;
       currentSpineIndex = data[0] + (data[1] << 8);
       nextPageNumber = data[2] + (data[3] << 8);
       if (nextPageNumber == UINT16_MAX) {
@@ -640,9 +653,10 @@ void EpubReaderActivity::onReaderEnter() {
               verticalOverride, furiganaOverride);
     }
   }
-  // We may want a better condition to detect if we are opening for the first time.
-  // This will trigger if the book is re-opened at Chapter 0.
-  if (currentSpineIndex == 0) {
+
+  // Only a book with no saved position starts at the text reference; a reader
+  // who paged back into spine 0 stays there.
+  if (!progressLoaded && currentSpineIndex == 0) {
     int textSpineIndex = epub->getSpineIndexForTextReference();
     if (textSpineIndex != 0) {
       currentSpineIndex = textSpineIndex;
@@ -683,6 +697,7 @@ int EpubReaderActivity::bookPercentFor(const ChapterPosition& position) const {
 }
 
 void EpubReaderActivity::onReaderExit() {
+  bookFonts.unload(renderer);
   saveTextSettingsIfDirty();  // a Text/Page change made with a panel still open
   // The extractor holds a raw pointer to this activity's epub; drop it before
   // the activity (and the shared_ptr) goes away.
@@ -880,7 +895,7 @@ void EpubReaderActivity::openDictionaryWordSelect(const bool pageOnScreen, const
     LOG_ERR("ERS", "OOM: word select");
     return;
   }
-  wordSelect->setMiningContext({getBookTitle(), getBookAuthor(), std::move(nextPageText), {}, bookPath});
+  wordSelect->setMiningContext(lookupContext(std::move(nextPageText), {}, section->currentPage));
   wordSelect->setPageTurnReversed(useReversedPageTurn());
   if (!lookupText.empty()) wordSelect->setLookupText(lookupText);
   startActivityForResult(std::move(wordSelect), [this](const ActivityResult& result) { onLookupPanelResult(result); });
@@ -1126,8 +1141,7 @@ void EpubReaderActivity::readerLoop() {
   if (pendingRefine != NO_IMAGE_REFINE && (section || verticalSection) && lastRenderCompleteMs != 0 &&
       !verticalBuildInProgress_.load(std::memory_order_relaxed) &&
       millis() - lastRenderCompleteMs >= IMAGE_REFINE_IDLE_MS && !RenderLock::peek()) {
-    const int shownPage = verticalSection ? verticalSection->currentPage : section->currentPage;
-    const uint32_t currentKey = (static_cast<uint32_t>(currentSpineIndex) << 16) | static_cast<uint16_t>(shownPage);
+    const uint32_t currentKey = (static_cast<uint32_t>(currentSpineIndex) << 16) | static_cast<uint16_t>(shownPage(0));
     if (pendingRefine == currentKey &&
         pendingImageRefine_.compare_exchange_strong(pendingRefine, NO_IMAGE_REFINE, std::memory_order_relaxed)) {
       // A refine only adds gray tones to the picture already on the glass. When the B/W pass could
@@ -1145,38 +1159,57 @@ void EpubReaderActivity::readerLoop() {
   }
   stepLookupPrescan();
 
-  // Idle glyph prewarm for the likely next page (currentPage + 1). The scan
-  // pass draws nothing (FCM scan mode suppresses pixels), so the displayed
-  // framebuffer is untouched; endScanAndPrewarm loads only glyphs not already
-  // cached. Debounced past rapid page-flipping, one attempt per position, and
-  // deferred while a render/build owns the CPU or the heap is at the render
-  // floor. Cross-chapter prewarm is deliberately out of scope (next spine's
-  // section isn't loaded).
-  constexpr unsigned long IDLE_PREWARM_DEBOUNCE_MS = 400;
+  // Idle glyph prewarm for the pages after the current one. The scan pass draws nothing (FCM scan
+  // mode suppresses pixels), so the displayed framebuffer is untouched; endScanAndPrewarm loads
+  // only glyphs not already cached. Deferred while a render/build owns the CPU or the heap is at
+  // the render floor. Cross-chapter prewarm is deliberately out of scope (next spine's section
+  // isn't loaded). A TTF reader font accumulates several pages ahead at once; an SD-card font
+  // warms one page, debounced past rapid page-flipping to spare the SD bus.
   {
     RenderLock lock{RenderLock::Try{}};
-    if (lock.held() && section && !section->isBuilding() && renderer.hasFrameBuffer() && lastRenderCompleteMs != 0 &&
-        millis() - lastRenderCompleteMs > IDLE_PREWARM_DEBOUNCE_MS && ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP &&
-        ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC &&
-        (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage)) {
-      idlePrewarmSpine = currentSpineIndex;
-      idlePrewarmPage = section->currentPage;
-      const int nextPage = section->currentPage + 1;
-      if (nextPage < static_cast<int>(section->pageCount)) {
-        if (const auto p = section->loadPage(nextPage)) {
-          if (auto* fcm = renderer.getFontCacheManager()) {
-            const auto t0 = millis();
-            auto scope = fcm->createPrewarmScope();
-            // MUST be the effective font, not the raw setting: render() recomputes and stores
-            // each line's word x-positions, so scanning with a different font rewrites the
-            // page's layout. With a CJK-only family selected (UDDigiKyokasho) every Latin
-            // glyph and the space measure zero, which collapsed all word gaps on the page.
-            // Same suppressRuby the real render will use: the point of this scan is to warm
-            // exactly the glyphs the next page turn draws, and with furigana off the annotation
-            // glyphs are never drawn -- scanning them spends SD reads and cache RAM on nothing.
-            p->render(renderer, effectiveReaderFontId(), 0, 0, !useFurigana());  // scan only, no pixels
-            scope.endScanAndPrewarm();
-            LOG_DBG("ERS", "Idle prewarm: page %d in %lums", nextPage, millis() - t0);
+    auto* fcm = renderer.getFontCacheManager();
+    // Never ahead of input: a press or release this frame, a held key, a latched turn or a held
+    // finger is handled first. Checked last, so idle frames with nothing to warm skip the reads.
+    const auto inputWaiting = [this] {
+      float touchX = 0.0f;
+      float touchY = 0.0f;
+      return mappedInput.wasAnyPressed() || mappedInput.wasAnyReleased() || pendingManualTurn != 0 ||
+             buttonContactClosed() || (gpio.hasTouch() && gpio.isTouchHeldAt(touchX, touchY));
+    };
+    if (lock.held() && fcm && section && !section->isBuilding() && renderer.hasFrameBuffer() &&
+        overlay == Overlay::None && lastRenderCompleteMs != 0 && ESP.getFreeHeap() > RENDER_MIN_FREE_HEAP &&
+        ESP.getMaxAllocHeap() > BACKGROUND_BUILD_MIN_MAX_ALLOC) {
+      if (idlePrewarmSpine != currentSpineIndex || idlePrewarmPage != section->currentPage) {
+        idlePrewarmSpine = currentSpineIndex;
+        idlePrewarmPage = section->currentPage;
+        idlePrewarmOffset = 0;
+      }
+      // MUST be the effective font, not the raw setting: render() recomputes and stores each
+      // line's word x-positions, so scanning with a different font rewrites the page's layout.
+      // With a CJK-only family selected (UDDigiKyokasho) every Latin glyph and the space measure
+      // zero, which collapsed all word gaps on the page.
+      const int fontId = effectiveReaderFontId();
+      const int maxLookahead = fcm->getIdleLookaheadPages(fontId);
+      const unsigned long debounceMs = maxLookahead > 1 ? 0UL : 400UL;
+      const int targetPage = section->currentPage + idlePrewarmOffset + 1;
+      if (idlePrewarmOffset < maxLookahead && millis() - lastRenderCompleteMs > debounceMs && !inputWaiting()) {
+        const auto p = targetPage < static_cast<int>(section->pageCount) ? section->loadPage(targetPage) : nullptr;
+        if (!p) {
+          idlePrewarmOffset = maxLookahead;
+        } else {
+          const auto t0 = millis();
+          // Laying out a page is work, not idle time: keep the clock up for it (upstream #4469).
+          HalPowerManager::Lock powerLock;
+          // Accumulating only for a multi-page lookahead; one SD page keeps the warm-and-clear scope.
+          auto scope = fcm->createPrewarmScope(maxLookahead > 1);
+          // Same suppressRuby the real render will use: with furigana off the annotation glyphs
+          // are never drawn, so scanning them spends SD reads and cache RAM on nothing.
+          p->render(renderer, fontId, 0, 0, !useFurigana());  // scan only, no pixels
+          if (scope.endScanAndPrewarm()) {
+            LOG_DBG("ERS", "Idle prewarm: page %d in %lums", targetPage, millis() - t0);
+            ++idlePrewarmOffset;
+          } else {
+            idlePrewarmOffset = maxLookahead;  // the cache is full: stop until the next page turn
           }
         }
       }
@@ -1349,6 +1382,7 @@ void EpubReaderActivity::readerLoop() {
   }
 
   switch (mappedInput.homeButtonAction()) {
+    case HomeButtonAction::FileBrowser:
     case HomeButtonAction::ReaderMenu:
     case HomeButtonAction::Bookmark:
     case HomeButtonAction::Sync:
@@ -1544,10 +1578,13 @@ void EpubReaderActivity::readerLoop() {
   }
 
   // A tap on a word looks it up, ahead of the menu's centre tap; a tap on empty space still opens the menu.
+  // In the menu's zone a near miss still means the word: a full line around text, not half, so only
+  // clearly empty space opens the menu.
   if (!atEndOfBook && tapLooksUp) {
     int tapX = 0;
     int tapY = 0;
-    if (mappedInput.wasScreenTapped(tapX, tapY) && textAtPoint(tapX, tapY)) {
+    if (mappedInput.wasScreenTapped(tapX, tapY) &&
+        textAtPoint(tapX, tapY, ReaderUtils::isInTouchMenuZone(renderer, tapX, tapY) ? 2 : 1)) {
       openDictionaryWordSelect(/*pageOnScreen=*/true, tapX, tapY);
       return;
     }
@@ -1580,8 +1617,7 @@ void EpubReaderActivity::readerLoop() {
 
   if (handleBackNavigation()) return;
 
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::CREATE_CLIPPING &&
-      mappedInput.wasReleased(MappedInputManager::Button::Power) &&
+  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::CREATE_CLIPPING && mappedInput.wasPowerSingleClick() &&
       !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
     startClipSelection();
     return;
@@ -1596,8 +1632,8 @@ void EpubReaderActivity::readerLoop() {
 
   // Handle short power button press for footnotes
   if ((!endOfBookMenuOpen && mappedInput.homeButtonAction() == HomeButtonAction::Footnotes) ||
-      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
-       mappedInput.wasReleased(MappedInputManager::Button::Power) && !gpio.wasReleased(HalGPIO::BTN_DOWN)) ||
+      (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES && mappedInput.wasPowerSingleClick() &&
+       !gpio.wasReleased(HalGPIO::BTN_DOWN)) ||
       (!endOfBookMenuOpen && mappedInput.sideActionFired(CrossPointSettings::SIDE_BTN_FOOTNOTES))) {
     // Inside a footnote the click is REPURPOSED: instead of opening the panel again it jumps back
     // to the reference it was read from. That repurposing is the whole of what
@@ -1646,8 +1682,7 @@ void EpubReaderActivity::readerLoop() {
   }
 
   // Handle short power button press for word lookup
-  if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::WORD_LOOKUP &&
-       mappedInput.wasReleased(MappedInputManager::Button::Power) && !gpio.wasReleased(HalGPIO::BTN_DOWN)) ||
+  if (mappedInput.wasPowerAction(CrossPointSettings::SHORT_PWRBTN::WORD_LOOKUP) ||
       ReaderUtils::wordLookupSideToggle(mappedInput)) {
     openDictionaryWordSelect(/*pageOnScreen=*/true);
     return;
@@ -1671,7 +1706,7 @@ void EpubReaderActivity::readerLoop() {
   const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
   const bool longPress = !fromTilt && heldMs >= ReaderUtils::SKIP_HOLD_MS;
   if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
-    const int curPage = verticalSection ? verticalSection->currentPage : (section ? section->currentPage : 0);
+    const int curPage = shownPage(0);
     // Holding Prev on the book's first page goes nowhere and must not replace a useful origin.
     if (nextTriggered || ((section || verticalSection) && curPage > 0) || currentSpineIndex > 0) {
       rememberJumpOrigin();
@@ -1945,6 +1980,7 @@ void EpubReaderActivity::applyVerticalFuriganaOverride(const int8_t verticalOver
     // Forcing vertical text on a non-CJK book is the same signal the book's script covers at
     // open: the companion font follows it.
     sdFontSystem.setCjkFallbackNeeded(renderer, fontScript());
+    syncBookFonts();
   }
   if (furiganaOverrideIn >= 0 && furiganaOverrideIn != (useFurigana() ? 1 : 0)) {
     furiganaOverride = furiganaOverrideIn;
@@ -1971,14 +2007,14 @@ void EpubReaderActivity::dropSectionsKeepingPosition() {
     cachedSpineIndex = currentSpineIndex;
     nextPageNumber = verticalSection->currentPage;
     cachedChapterTotalPageCount = verticalSection->pageCount;
-    cachedVisibleTextOffset = verticalSection->getVisibleTextOffsetForPage(verticalSection->currentPage);
+    cachedVisibleTextOffset = visibleOffsetForPage(verticalSection->currentPage);
   } else if (section) {
     cachedSpineIndex = currentSpineIndex;
     nextPageNumber = section->currentPage;
     // estimatedTotalPages(), not pageCount: mid-build the watermark sits barely ahead of
     // currentPage, so the ratio would be ~1.0 and land the reader at the chapter's end.
     cachedChapterTotalPageCount = section->estimatedTotalPages();
-    cachedVisibleTextOffset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(section->currentPage));
+    cachedVisibleTextOffset = visibleOffsetForPage(section->currentPage);
   }
   section.reset();
   verticalSection.reset();
@@ -2010,6 +2046,7 @@ void EpubReaderActivity::applyLanguageState() {
   // CJK books (or forced vertical text) need the proper-size companion font; plain Latin books
   // must not pay its SD load / RAM (user-reported).
   sdFontSystem.setCjkFallbackNeeded(renderer, fontScript());
+  syncBookFonts();
   // Word lookup reads the converted dictionary of the book's language, and traditional Chinese
   // sets its vertical punctuation differently from Japanese. Both are process-wide and decided
   // here, before any layout or lookup runs.
@@ -2150,6 +2187,23 @@ void EpubReaderActivity::applyProgressChange(const ProgressChangeResult& sync) {
   if (sync.hasVisibleTextOffset && sync.spineIndex >= 0 && sync.spineIndex < epub->getSpineItemsCount()) {
     RenderLock lock(*this);
     clearDeferredReposition();
+    if (useVerticalText()) {
+      if (verticalSection && currentSpineIndex == sync.spineIndex) {
+        const auto page = verticalSection->getPageForVisibleTextOffset(sync.visibleTextOffset);
+        verticalSection->currentPage = page.value_or(std::max(0, sync.page));
+      } else {
+        // Another chapter: the vertical load resolves the offset as it does a saved position.
+        currentSpineIndex = sync.spineIndex;
+        cachedSpineIndex = sync.spineIndex;
+        cachedVisibleTextOffset = sync.visibleTextOffset;
+        cachedChapterTotalPageCount = sync.totalPages;
+        nextPageNumber = std::max(0, sync.page);  // hint until the offset resolves
+        section.reset();
+        verticalSection.reset();
+      }
+      requestUpdate();
+      return;
+    }
     if (section && currentSpineIndex == sync.spineIndex) {
       // Already in this chapter and laid out: resolve straight away, no reload.
       const auto page = section->getPageForVisibleTextOffset(sync.visibleTextOffset);
@@ -2167,9 +2221,7 @@ void EpubReaderActivity::applyProgressChange(const ProgressChangeResult& sync) {
 
   int targetSpineIndex = sync.spineIndex;
   int targetPage = sync.page;
-  const int activeTotalPages = verticalSection ? verticalSection->pageCount
-                               : section       ? section->estimatedTotalPages()
-                                               : 0;
+  const int activeTotalPages = chapterPageTotal(0);
   const bool cachedPageMatchesActiveSection = (section || verticalSection) && sync.totalPages > 0 &&
                                               currentSpineIndex == sync.spineIndex && sync.page >= 0 &&
                                               sync.page < sync.totalPages && activeTotalPages == sync.totalPages;
@@ -2254,6 +2306,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         }
         sdFontSystem.ensureLoaded(renderer);
         sdFontSystem.setCjkFallbackNeeded(renderer, fontScript());
+        syncBookFonts();
         // Reading Orientation now only changes via this screen (removed from the reader's
         // own quick menu, which used to apply it straight from the popup via
         // applyOrientation(menu.orientation)): pick up a change the same way onEnter()
@@ -2288,7 +2341,8 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         }
         section.reset();
       }
-      startActivityForResult(std::make_unique<EpubReaderChapterSelectionActivity>(renderer, mappedInput, epub, tocIdx),
+      startActivityForResult(std::make_unique<ChapterListActivity>(renderer, mappedInput,
+                                                                   std::make_unique<EpubChapterSource>(epub, tocIdx)),
                              [this](const ActivityResult& result) {
                                if (result.isCancelled) {
                                  openReaderMenu();
@@ -2372,14 +2426,20 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       {
         RenderLock lock(*this);
         if (epub && (section || verticalSection)) {
-          uint16_t backupSpine = currentSpineIndex;
-          uint16_t backupPage = verticalSection ? verticalSection->currentPage : section->currentPage;
-          uint16_t backupPageCount = verticalSection ? verticalSection->pageCount : section->pageCount;
+          // The progress file lives in the cache being cleared, so it is written afterwards; its
+          // content offset is read first, while the chapter is still loaded, so the book reopens on
+          // the same text however the rebuilt cache lays it out.
+          const int spine = currentSpineIndex;
+          const int page = shownPage(0);
+          const int total = chapterPageTotal(0);
+          const auto offset = visibleOffsetForPage(page);
+          const auto percent = static_cast<uint8_t>(pageBasedPercent(spine, page + 1));
           section.reset();
           verticalSection.reset();
           epub->clearCache();
           epub->setupCacheDir();
-          if (!saveProgress(backupSpine, backupPage, backupPageCount, verticalOverride, furiganaOverride)) {
+          if (!EpubReaderUtils::saveProgress(*epub, spine, page, total, verticalOverride, furiganaOverride, percent,
+                                             offset)) {
             LOG_ERR("ERS", "Failed to save progress before cache clear");
           }
         }
@@ -2541,12 +2601,8 @@ bool EpubReaderActivity::launchKOReaderSync(const bool withClockAndInsights) {
     return true;
   }
 
-  const int currentPage = verticalSection ? verticalSection->currentPage
-                          : section       ? section->currentPage
-                                          : nextPageNumber;
-  const int totalPages = verticalSection ? verticalSection->pageCount
-                         : section       ? section->estimatedTotalPages()
-                                         : cachedChapterTotalPageCount;
+  const int currentPage = shownPage(nextPageNumber);
+  const int totalPages = chapterPageTotal(cachedChapterTotalPageCount);
 
   // Pre-compute local KO position and chapter name while Epub is still in RAM.
   // getCurrentPosition() carries the spine index, page, total, visible text offset and
@@ -2736,8 +2792,8 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   pendingImageRefine_.store(NO_IMAGE_REFINE, std::memory_order_relaxed);
   requestedImageRefine_.store(NO_IMAGE_REFINE, std::memory_order_relaxed);
 
-  const int curPage = verticalSection ? verticalSection->currentPage : (section ? section->currentPage : 0);
-  const int pgCount = verticalSection ? verticalSection->pageCount : (section ? section->pageCount : 0);
+  const int curPage = shownPage(0);
+  const int pgCount = builtPageCount(0);
   bool moved = true;
 
   if (isForwardTurn) {
@@ -2927,6 +2983,8 @@ bool EpubReaderActivity::backgroundBuildWanted() const {
 
 // TODO: Failure handling
 void EpubReaderActivity::render(RenderLock&& lock) {
+  // Here rather than in renderContents(), so vertical pages get the reading waveform too.
+  const ReaderUtils::ReaderRefreshScope readerRefresh;
   // Presses from here on are what the speculative tail gives way to (nextTurnAlreadyRequested,
   // the image warm). Sampled at the START: a menu press made while this page was still
   // refreshing came before the tail began, and the tail then warmed the next page for seconds
@@ -2949,6 +3007,10 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // Runs under the render task's RenderLock; catches every requestUpdate()
   // exit from the overlay while its deferred chrome refresh is still pending.
   settleOverlayRefresh();
+
+  // The old page snapshot must not compete with chapter builds for heap.
+  // An open overlay gets a fresh snapshot after the new page is rendered.
+  discardOverlayPage();
 
   const auto showPendingSyncSaveError = [this]() {
     if (!pendingSyncSaveError) return;
@@ -3521,6 +3583,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   }
 
   if (!section) {
+    idlePrewarmOffset = 0;
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
     prewarmedHPage_ = -1;  // fresh section: any page warmed for the previous one is stale
@@ -3699,7 +3762,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
             return;
           }
           while (!section->isBuildComplete() &&
-                 (anchorJump               ? !section->findAnchor(pendingAnchor)
+                 (anchorJump               ? !section->findAnchorDuringBuild(pendingAnchor)
                   : offsetJump.has_value() ? !section->buildReachedVisibleTextOffset(*offsetJump)
                                            : static_cast<int>(section->pageCount) <= target)) {
             // Anchor jump: build until the anchor's page is laid out (usually page 0), checking a
@@ -3948,11 +4011,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     currentPageLinks = std::move(p->links);
     currentPageLinkMarginLeft = orientedMarginLeft;
     currentPageLinkMarginTop = orientedMarginTop;
-
-    // The overlay and non-tiled grayscale renderer share the renderer's single
-    // stored-BW slot. Release the old page snapshot before renderContents()
-    // needs that slot, then snapshot the newly rendered page below.
-    discardOverlayPage();
 
     const auto start = millis();
     const uint32_t currentKey =
@@ -4249,8 +4307,8 @@ void EpubReaderActivity::runPostRenderTail(const uint16_t viewportWidth, const u
                                                     warmTarget < section->pageCount) {
       if (auto np = section->loadPageAt(warmTarget)) {
         // createPrewarmScope() clears the cache in its constructor, freeing the MAX_PAGE_SLOTS
-        // page-buffer slots, so each warm REPLACES the previous page's glyphs -- slots do not
-        // accumulate across turns even though release() keeps the result. The scan pass draws
+        // page-buffer slots, so for SD and built-in fonts each warm REPLACES the previous page's
+        // glyphs even though release() keeps the result. A TTF font keeps its glyphs across scopes. The scan pass draws
         // nothing (GfxRenderer skips drawing while scanning), so the displayed framebuffer is
         // untouched and this is safe inside an async refresh window.
         auto scope = fcm->createPrewarmScope();
@@ -4279,11 +4337,7 @@ void EpubReaderActivity::runPostRenderTail(const uint16_t viewportWidth, const u
   const int page = vertical ? verticalSection->currentPage : section->currentPage;
   const int pageCount = vertical ? verticalSection->pageCount : section->estimatedTotalPages();
   if (currentSpineIndex != lastSavedSpineIndex || page != lastSavedPage || pageCount != lastSavedPageCount) {
-    if (saveProgress(currentSpineIndex, page, pageCount, verticalOverride, furiganaOverride)) {
-      lastSavedSpineIndex = currentSpineIndex;
-      lastSavedPage = page;
-      lastSavedPageCount = pageCount;
-    }
+    saveProgress(currentSpineIndex, page, pageCount, verticalOverride, furiganaOverride);
   }
 }
 
@@ -4534,36 +4588,30 @@ void EpubReaderActivity::warmNextPageImageCache(const uint16_t viewportWidth, co
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount, int8_t vertOverride,
                                       int8_t furiOverride) {
   const uint8_t percent = static_cast<uint8_t>(pageBasedPercent(spineIndex, currentPage + 1));
-  std::optional<uint32_t> offset;
-  if (verticalSection && spineIndex == currentSpineIndex && currentPage >= 0 &&
-      currentPage < verticalSection->pageCount) {
-    // Vertical records the same content offset horizontal does, so progress saved while
-    // reading vertically resolves exactly when the book is next opened horizontally (and the
-    // other way round). Without this the two modes could only meet through page proportions.
-    offset = verticalSection->getVisibleTextOffsetForPage(currentPage);
-  } else if (section && spineIndex == currentSpineIndex && currentPage >= 0 && currentPage < section->pageCount) {
-    // The on-screen page's offset was captured at load; reuse it to avoid a fresh section-file
-    // open on every page turn. Any other page (rare) falls back to a direct lookup.
-    offset = (currentPage == section->currentPage && currentPageVisibleOffset.has_value())
-                 ? currentPageVisibleOffset
-                 : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
-  }
+  // The content offset lets the position survive re-pagination, and lets progress saved in one
+  // layout (vertical or horizontal) resolve exactly in the other.
+  const std::optional<uint32_t> offset =
+      spineIndex == currentSpineIndex ? visibleOffsetForPage(currentPage) : std::nullopt;
   // Past the last spine item is the end-of-book screen, not a page.
   if (spineIndex >= 0 && spineIndex < epub->getSpineItemsCount()) {
     noteRecentPage(spineIndex, currentPage, pageCount, percent, offset);
   }
-  return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, vertOverride, furiOverride, percent,
-                                       offset);
+  if (!EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount, vertOverride, furiOverride, percent,
+                                     offset)) {
+    return false;
+  }
+  // Every path that saves records it, so the render's "position unchanged" check compares against
+  // what is really on the card. Otherwise a page saved by another path (the early-rendered page)
+  // left the record behind, and returning to the page recorded there -- Jump Back, Recent Pages --
+  // was taken for no change and not saved.
+  lastSavedSpineIndex = spineIndex;
+  lastSavedPage = currentPage;
+  lastSavedPageCount = pageCount;
+  return true;
 }
 
 void EpubReaderActivity::rememberCurrentContentOffset() {
-  cachedVisibleTextOffset.reset();
-  if (verticalSection && verticalSection->currentPage >= 0 &&
-      verticalSection->currentPage < verticalSection->pageCount) {
-    cachedVisibleTextOffset = verticalSection->getVisibleTextOffsetForPage(verticalSection->currentPage);
-  } else if (section && section->currentPage >= 0 && section->currentPage < section->pageCount) {
-    cachedVisibleTextOffset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(section->currentPage));
-  }
+  cachedVisibleTextOffset = visibleOffsetForPage(shownPage(-1));
 }
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
@@ -4621,19 +4669,21 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // closing it re-renders the page with grays anyway: skip the gray pass here.
   const bool underToolbar = overlay != Overlay::None && usesToolbarMenu() && xteinkClassPanel();
   const bool needsTextGrayscale = SETTINGS.textAntiAliasing && !underToolbar;
-  const bool needsAnyGrayscale = needsTextGrayscale || (pageHasImages && !BoardConfig::isEegoA4() && !underToolbar);
-  const bool absoluteImageGrayscale = pageHasImages && !gpio.deviceIsX3() &&
-                                      display.getController() == HalDisplay::Controller::UC8279 &&
-                                      renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
+  const bool needsAnyGrayscale = needsTextGrayscale || (pageHasImages && !underToolbar);
+  const bool absoluteImageGrayscale =
+      pageHasImages && !gpio.deviceIsX3() &&
+      (display.getController() == HalDisplay::Controller::UC8279 || BoardConfig::isPicco()) &&
+      renderer.grayscaleCapabilities(HalDisplay::GrayscaleMode::Absolute).supported();
   const auto grayscale = renderer.grayscaleCapabilities(absoluteImageGrayscale ? HalDisplay::GrayscaleMode::Absolute
                                                                                : HalDisplay::GrayscaleMode::Overlay);
   const bool tiledGrayscale = needsAnyGrayscale && grayscale.stripUploads;
-  // Paper Mono only (no other panel combines): defer the B/W base activation so
+  // Paper Mono and EEGO A4 (no other panel combines): defer the B/W base activation so
   // the gray planes join it in a single waveform. Displaying the base
   // separately makes the gray pass re-drive the whole text body — a visible
-  // flash on every AA page.
-  const bool combinedGrayscaleBase =
-      tiledGrayscale && !pageHasImages && grayscale.base == HalDisplay::GrayscaleBase::Combined;
+  // flash on every AA page. The EEGO A4 combines image pages too: its driver
+  // then shows base and grays itself instead of repainting a displayed base.
+  const bool combinedGrayscaleBase = tiledGrayscale && (!pageHasImages || BoardConfig::isEegoA4()) &&
+                                     grayscale.base == HalDisplay::GrayscaleBase::Combined;
   // Whole-plane buffering only pays when the BW refresh genuinely runs async
   // underneath it; on blocking panels (X3) it would just spend ~50 KB for the
   // identical serial timing. Image pages take the blocking double-FAST path
@@ -4789,12 +4839,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
       const auto tGrayWrite = millis();
 
-      renderer.setRenderMode(GfxRenderer::BW);
       if (!cancelled && !shouldCancel()) {
         renderer.displayGrayBuffer();
       } else {
         cancelled = true;
       }
+      // After displayGrayBuffer, as in runGrayPass().
+      renderer.setRenderMode(GfxRenderer::BW);
       const auto tGrayDisplay = millis();
 
       // BW framebuffer is intact; re-sync controller RAM for the next
@@ -4862,14 +4913,12 @@ void EpubReaderActivity::updateChapterPageSpan(const uint16_t viewportWidth, con
       verticalBuildInProgress_.load(std::memory_order_relaxed) || (section && section->isBuilding());
 
   // Memo key: the raw watermark, which advances as the build lays pages out.
-  const int livePages = verticalSection ? verticalSection->pageCount : (section ? section->pageCount : 0);
+  const int livePages = builtPageCount(0);
   // Model input: the chapter's estimated total, the same number sectionPageSpan() shows. The
   // watermark makes a half-built chapter look only as long as the pages laid out so far, which
   // shrinks the X/Y span and, through spinePagesReal, the whole-book percentage with it. Vertical
   // builds in one pass, so its pageCount is already the total.
-  const int liveTotalPages = verticalSection ? verticalSection->pageCount
-                             : section       ? section->estimatedTotalPages()
-                                             : 0;
+  const int liveTotalPages = chapterPageTotal(0);
   const bool vertical = useVerticalText();
   if (chapterSpanSpine == currentSpineIndex && chapterSpanLivePages == livePages && chapterSpanVertical == vertical &&
       chapterSpanBuildActive == buildActive) {
@@ -5019,10 +5068,10 @@ void EpubReaderActivity::updateChapterPageSpan(const uint16_t viewportWidth, con
 
 EpubReaderActivity::SectionPageSpan EpubReaderActivity::sectionPageSpan() const {
   if (!verticalSection && lookupPageHeld_) return lookupSpan_;
-  const int rawPage = verticalSection ? verticalSection->currentPage : section ? section->currentPage : 0;
+  const int rawPage = shownPage(0);
   // estimatedTotalPages() rather than pageCount: while a giant spine builds, pageCount is only
   // the watermark reached so far, so "page X of Y" would count against a total that keeps moving.
-  const int rawCount = verticalSection ? verticalSection->pageCount : section ? section->estimatedTotalPages() : 0;
+  const int rawCount = chapterPageTotal(0);
   if (verticalSection && verticalSection->isBuilding()) {
     // Mid-build, pageCount is only how far the slices got, and the page on screen can be the one
     // the current slice just laid out. Count against the chapter's last known length, as below.
@@ -5110,7 +5159,7 @@ bool EpubReaderActivity::prewarmVerticalPageGlyphs(const VerticalPage& vpage) {
                       [](uint8_t m, const auto& g) { return static_cast<uint8_t>(m | (1u << (g.style & 0x03))); });
   if (styleMask == 0) styleMask = 1 << EpdFontFamily::REGULAR;
   const std::string pageText = PageTextExtractor::fromVerticalPage(vpage);
-  fcm->prewarmCache(effectiveReaderFontId(), pageText.c_str(), styleMask);
+  fcm->prewarmCache(effectiveReaderFontId(), pageText.c_str(), styleMask, /*accumulate=*/false);
   return true;
 }
 
@@ -5150,7 +5199,11 @@ EpubReaderActivity::GrayPassResult EpubReaderActivity::runGrayPass(const GrayPas
   const auto skip = [&](const char* why) {
     LOG_ERR("ERS", "Grayscale pass skipped (%s); page stays B/W", why);
     // An absolute base whose planes will now never arrive is cancelled by the switch back to BW.
-    if (spec.absolute) renderer.setRenderMode(GfxRenderer::BW);
+    // It may not have shown the page, so the B/W page is pushed instead.
+    if (spec.absolute) {
+      renderer.setRenderMode(GfxRenderer::BW);
+      ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
+    }
     if (spec.resyncIfSkipped) renderer.cleanupGrayscaleWithFrameBuffer();
     return GrayPassResult::Skipped;
   };
@@ -5377,6 +5430,7 @@ void EpubReaderActivity::earlyRenderVerticalPageThunk(void* ctx, const VerticalP
 }
 
 void EpubReaderActivity::earlyRenderVerticalPage(const VerticalPage& page, const int pageIndex) {
+  const ReaderUtils::ReaderRefreshScope readerRefresh;
   const auto start = millis();
   // Update the shown-page index BEFORE drawing (the render takes 0.7-3s): a button press
   // during the render should target the page AFTER this one, not re-request this one
@@ -5492,7 +5546,7 @@ void EpubReaderActivity::recordTapLines(const Page& page, const int fontId, cons
   portEXIT_CRITICAL(&tapLinesMux_);
 }
 
-bool EpubReaderActivity::textAtPoint(const int x, const int y) {
+bool EpubReaderActivity::textAtPoint(const int x, const int y, const int reach) {
   if (!verticalSection) {
     // The lines recorded when the page was drawn, so a tap during its refresh still counts. A
     // fingertip is not a stylus: up to half a line around a line of text is still on it, and the
@@ -5504,8 +5558,8 @@ bool EpubReaderActivity::textAtPoint(const int x, const int y) {
       valid = true;
       for (uint8_t i = 0; i < tapLineCount_ && !hit; ++i) {
         const TapLine& line = tapLines_[i];
-        hit = x >= line.left - tapSlop_ && x < line.right + tapSlop_ && y >= line.top - tapSlop_ &&
-              y < line.bottom + tapSlop_;
+        const int slop = tapSlop_ * reach;
+        hit = x >= line.left - slop && x < line.right + slop && y >= line.top - slop && y < line.bottom + slop;
       }
     }
     portEXIT_CRITICAL(&tapLinesMux_);
@@ -5523,8 +5577,9 @@ bool EpubReaderActivity::textAtPoint(const int x, const int y) {
     struct Hit {
       int x;
       int y;
+      int reach;
       bool found;
-    } hit{x, y, false};
+    } hit{x, y, reach, false};
     const VerticalPage* vpage = verticalSection->getPage();
     // A chapter still being laid out cannot serve its page here; the lookup panel can (it drops
     // the build and keeps the page), and finds no word if the tap was not on one.
@@ -5532,8 +5587,10 @@ bool EpubReaderActivity::textAtPoint(const int x, const int y) {
     forEachVerticalClipCell(renderer, *vpage, fontId, left + SETTINGS.screenMargin, top + SETTINGS.screenMargin, &hit,
                             [](void* ctx, const VerticalClipCell& cell) {
                               auto& h = *static_cast<Hit*>(ctx);
-                              h.found = h.x >= cell.x && h.x < cell.x + cell.width && h.y >= cell.y &&
-                                        h.y < cell.y + cell.height;
+                              // Half a cell per step of reach beyond the cell itself.
+                              const int slop = (h.reach - 1) * cell.width / 2;
+                              h.found = h.x >= cell.x - slop && h.x < cell.x + cell.width + slop &&
+                                        h.y >= cell.y - slop && h.y < cell.y + cell.height + slop;
                               return !h.found;
                             });
     return hit.found;
@@ -5543,7 +5600,7 @@ bool EpubReaderActivity::textAtPoint(const int x, const int y) {
   if (!page) return false;
   // A fingertip is not a stylus: the gap between two words or two lines still counts as the
   // nearer word, up to half a line out. The word-select screen then picks that nearest word.
-  const int slop = renderer.getLineHeight(fontId) / 2;
+  const int slop = renderer.getLineHeight(fontId) / 2 * reach;
   for (const auto& element : page->elements) {
     if (element->getTag() != TAG_PageLine) continue;
     const auto& line = static_cast<const PageLine&>(*element);
@@ -5596,6 +5653,8 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
   const auto fillHighlight = [&](const int x, const int y, const int width, const int height) {
     if (BoardConfig::isEegoA4() && renderer.getRenderMode() != GfxRenderer::BW) {
       // Gray planes start at zero and use set bits for ink, opposite to B/W.
+      // MSB plane only: light gray.
+      if (renderer.getRenderMode() != GfxRenderer::GRAYSCALE_MSB) return;
       for (int py = y + (y & 1); py < y + height; py += 2) {
         for (int px = x + (x & 1); px < x + width; px += 2) renderer.drawPixel(px, py, false);
       }
@@ -5935,13 +5994,13 @@ void EpubReaderActivity::renderStatusBar() const {
     }
 
   } else if (sb.titleMode == CrossPointSettings::STATUS_BAR_TITLE::CHAPTER_TITLE) {
-    title = tr(STR_UNNAMED);
-    const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-    if (tocIndex != -1) {
-      const auto tocItem = epub->getTocItem(tocIndex);
-      title = tocItem.title;
+    // The lookup reads book.bin; a page render draws the bar several times.
+    if (statusTitleSpine != currentSpineIndex && epub) {
+      const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+      statusTitle = tocIndex != -1 ? epub->getTocItem(tocIndex).title : tr(STR_UNNAMED);
+      statusTitleSpine = currentSpineIndex;
     }
-
+    title = epub ? statusTitle : tr(STR_UNNAMED);
   } else if (sb.titleMode == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
     title = epub->getTitle();
   }
@@ -5972,10 +6031,22 @@ ReaderRenderSpec EpubReaderActivity::readerSpec(const uint16_t viewportWidth, co
   ReaderRenderSpec spec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
   spec.fontId = effectiveReaderFontId();
   spec.furiganaEnabled = useFurigana();
+  spec.bookFontsSignature = bookFonts.signature();
   int marginTop, marginRight, marginBottom, marginLeft;
   renderer.getOrientedViewableTRBL(&marginTop, &marginRight, &marginBottom, &marginLeft);
   spec.rightMarginPx = static_cast<uint16_t>(std::max(0, marginRight + SETTINGS.screenMargin));
   return spec;
+}
+
+// Publisher fonts follow the reader font, its size and the setting, so they are synced wherever
+// those change: after every font reload, before the next layout reads bookFonts.signature().
+void EpubReaderActivity::syncBookFonts() {
+  // Only with the book's own CSS: their rules are part of it.
+  if (epub && SETTINGS.publisherFonts && SETTINGS.embeddedStyle) {
+    bookFonts.load(*epub, renderer, SETTINGS.fontPointSize, effectiveReaderFontId());
+  } else {
+    bookFonts.unload(renderer);
+  }
 }
 
 int EpubReaderActivity::effectiveReaderFontId() const {
@@ -6063,7 +6134,7 @@ void EpubReaderActivity::stepLookupPrescan() {
   constexpr unsigned long PRESCAN_REST_MS = 1500;  // after the page is up: past a run of turns
   constexpr uint32_t PRESCAN_SLICE_MS = 25;
   constexpr uint32_t PRESCAN_MIN_ALLOC = 40 * 1024;
-  const int page = verticalSection ? verticalSection->currentPage : section ? section->currentPage : -1;
+  const int page = shownPage(-1);
   if (prescan_ && (prescanSpine_ != currentSpineIndex || prescanPage_ != page)) {
     prescan_.reset();  // the reader moved on
     DictIndex::releaseCaches();
@@ -6302,8 +6373,7 @@ void EpubReaderActivity::openWordLookupPanel(const bool pageOnScreen, const int 
         if (!lookup) {
           LOG_ERR("ERS", "OOM: word lookup panel");
         } else {
-          lookup->setMiningContext(
-              {getBookTitle(), getBookAuthor(), std::move(miningTail), effectiveLanguage(), bookPath});
+          lookup->setMiningContext(lookupContext(std::move(miningTail), effectiveLanguage(), pageIndex));
           lookup->setPageTurnReversed(useReversedPageTurn());
           panel = std::move(lookup);
         }
@@ -6379,7 +6449,7 @@ void EpubReaderActivity::openWordLookupPanel(const bool pageOnScreen, const int 
         requestUpdate();  // the build was suspended for the panel; the next render resumes it
         return;
       }
-      lookup->setMiningContext({getBookTitle(), getBookAuthor(), std::move(miningTail), effectiveLanguage(), bookPath});
+      lookup->setMiningContext(lookupContext(std::move(miningTail), effectiveLanguage(), pageIndex));
       lookup->setPageTurnReversed(useReversedPageTurn());
       startActivityForResult(std::move(lookup), [this](const ActivityResult& result) { onLookupPanelResult(result); });
     }
@@ -6427,7 +6497,7 @@ void EpubReaderActivity::openTranslationFor(std::string text, const StrId title)
   // (see MIN_HEAP_FOR_TLS in EpubReaderTranslationActivity.cpp). Sync nextPageNumber first
   // so the normal reload-from-cache path in render() resumes on the same page when we
   // return -- same pattern as the page-turn/spine-change call sites in this file.
-  nextPageNumber = verticalSection ? verticalSection->currentPage : section ? section->currentPage : nextPageNumber;
+  nextPageNumber = shownPage(nextPageNumber);
   {
     RenderLock lock(*this);  // the render task may still be in its warm tail
     section.reset();
@@ -6520,7 +6590,7 @@ int EpubReaderActivity::currentTocIndex() const {
   if (!epub) return -1;
   const int first = epub->getTocIndexForSpineIndex(currentSpineIndex);
   if (first < 0 || (!section && !verticalSection)) return first;
-  const int currentPage = verticalSection ? verticalSection->currentPage : section->currentPage;
+  const int currentPage = shownPage(0);
   // Bounds the TOC reads for a book with one huge file of many sections.
   static constexpr int MAX_SECTIONS_SCANNED = 64;
   const int last = std::min(epub->getTocItemsCount(), first + 1 + MAX_SECTIONS_SCANNED);
@@ -6550,6 +6620,28 @@ int EpubReaderActivity::currentTocIndex() const {
     best = tocIndices[i];
   }
   return best;
+}
+
+sentencemining::BookContext EpubReaderActivity::lookupContext(std::string nextPageText, std::string language,
+                                                              const int pageIndex) {
+  sentencemining::BookContext context{getBookTitle(), getBookAuthor(), std::move(nextPageText), std::move(language),
+                                      bookPath};
+  if (!SETTINGS.vocabularyHistoryEnabled || !epub) return context;
+  // A chapter is a spine item here: the word's own TOC entry would need its offset on the page.
+  const int tocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+  if (tocIndex != -1) context.chapter = epub->getTocItem(tocIndex).title;
+  context.page = static_cast<uint16_t>(pageIndex + 1);
+  context.spine = static_cast<uint16_t>(currentSpineIndex);
+  if (vocabularyMetadataBook != epub.get()) {
+    vocabularyMetadataBook = epub.get();
+    vocabularyMetadata = makeUniqueNoThrow<Epub::SyncMetadata>();
+    if (vocabularyMetadata && !epub->loadSyncMetadata(*vocabularyMetadata)) vocabularyMetadata.reset();
+  }
+  if (vocabularyMetadata) {
+    context.series = vocabularyMetadata->series;
+    context.seriesIndex = vocabularyMetadata->seriesIndex;
+  }
+  return context;
 }
 
 std::string EpubReaderActivity::currentChapterTitle() const {
@@ -6976,8 +7068,8 @@ void EpubReaderActivity::renderOverlay() {
 
   if (overlay == Overlay::Toolbar) {
     chapterTitle = currentChapterTitle();
-    const int pageCount = verticalSection ? verticalSection->pageCount : section->estimatedTotalPages();
-    const int currentPage = verticalSection ? verticalSection->currentPage : section->currentPage;
+    const int pageCount = chapterPageTotal(0);
+    const int currentPage = shownPage(0);
     const float chapterProgress =
         pageCount > 0 ? static_cast<float>(currentPage + 1) / static_cast<float>(pageCount) : 0.0f;
     const float bookProgress = epub->calculateProgress(currentSpineIndex, chapterProgress);
@@ -7723,7 +7815,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
     }
     // A child screen (menu, footnote list) may have released the section;
     // nextPageNumber then holds the page it was on.
-    const int page = verticalSection ? verticalSection->currentPage : section ? section->currentPage : nextPageNumber;
+    const int page = shownPage(nextPageNumber);
     savedPositions[footnoteDepth] = {currentSpineIndex, page};
     footnoteDepth++;
     LOG_DBG("ERS", "Saved position [%d]: spine %d, page %d", footnoteDepth, currentSpineIndex, page);
@@ -7840,7 +7932,7 @@ void EpubReaderActivity::jumpBack() {
   target.page = jumpOrigin->page;
   target.totalPages = jumpOrigin->totalPages;
   // applyProgressChange() resolves content offsets only for the horizontal layout.
-  target.hasVisibleTextOffset = jumpOrigin->visibleTextOffset.has_value() && !useVerticalText();
+  target.hasVisibleTextOffset = jumpOrigin->visibleTextOffset.has_value();
   target.visibleTextOffset = jumpOrigin->visibleTextOffset.value_or(0);
   // Records the current page as the new origin, so Jump Back toggles between the two.
   applyProgressChange(target);
@@ -7873,11 +7965,12 @@ void EpubReaderActivity::saveJumpOrigin() const {
 void EpubReaderActivity::loadJumpOrigin() {
   const std::string path = epub->getCachePath() + "/jump.bin";
   if (!Storage.exists(path.c_str())) return;
+  bool readable = false;
   {
     HalFile f;
     uint8_t data[JUMP_FILE_SIZE];
-    if (Storage.openFileForRead("ERS", path, f) && f.read(data, sizeof(data)) == static_cast<int>(sizeof(data)) &&
-        data[0] == JUMP_FILE_VERSION) {
+    readable = Storage.openFileForRead("ERS", path, f) && f.read(data, sizeof(data)) == static_cast<int>(sizeof(data));
+    if (readable && data[0] == JUMP_FILE_VERSION) {
       JumpOrigin origin;
       origin.spineIndex = data[1] | (data[2] << 8);
       origin.page = data[3] | (data[4] << 8);
@@ -7891,7 +7984,8 @@ void EpubReaderActivity::loadJumpOrigin() {
     }
   }
   // Consumed once: a later exit rewrites it, and an unclean shutdown must not resurrect a stale one.
-  Storage.remove(path.c_str());
+  // A read that failed now keeps the file for the next open.
+  if (readable) Storage.remove(path.c_str());
 }
 
 void EpubReaderActivity::noteRecentPage(const int spineIndex, const int page, const int pageCount,
@@ -7932,24 +8026,48 @@ std::vector<std::string> EpubReaderActivity::recentPageLabels() const {
   const int today = haveNow ? RecentPages::dayNumber(now.tm_year + 1900, now.tm_mon + 1, now.tm_mday) : 0;
   const bool use12Hour = SETTINGS.clockFormat == 1;
 
-  std::lock_guard<std::mutex> lock(recentPagesMutex);
+  // Copied out first: the table-of-contents lookups below read book.bin, which the render task also
+  // reads, so they run under the render lock -- never inside recentPagesMutex, which the render task
+  // takes (saveProgress -> noteRecentPage) while it holds the render lock.
+  std::vector<RecentPages::Place> places;  // off the stack: a few dozen bytes, only while a menu opens
+  {
+    std::lock_guard<std::mutex> lock(recentPagesMutex);
+    places.reserve(RecentPages::MAX_PLACES);
+    // Place 0 is the page on screen.
+    for (int i = 1; i < recentPages.count(); i++) places.push_back(recentPages.at(i));
+  }
+  const int count = static_cast<int>(places.size());
   std::vector<std::string> labels;
-  if (recentPages.count() < 2) return labels;
-  // At most five short strings, built only while the popup's menu is open.
-  labels.reserve(recentPages.count() - 1);
-  // Place 0 is the page on screen.
-  for (int i = 1; i < recentPages.count(); i++) {
-    const RecentPages::Place& place = recentPages.at(i);
-    char where[32];
-    if (place.bookPage > 0) {
-      snprintf(where, sizeof(where), tr(STR_PAGE_NUMBER_FORMAT), place.bookPage);
-    } else {
-      snprintf(where, sizeof(where), "%d%%", static_cast<int>(place.percent));
+  if (count == 0) return labels;
+  // At most five short strings, built only while a menu is open.
+  labels.reserve(count);
+  RenderLock renderLock;
+  for (int i = 0; i < count; i++) {
+    const RecentPages::Place& place = places[i];
+    // "Chapter · Page 3 · 21:14". A long chapter name is shortened, so the page and time after it
+    // stay on the dialog's one line.
+    std::string label;
+    const int tocIndex = epub ? epub->getTocIndexForSpineIndex(place.spineIndex) : -1;
+    if (tocIndex != -1) {
+      const std::string title = epub->getTocItem(tocIndex).title;
+      constexpr int kMaxTitleChars = 16;
+      size_t end = 0;
+      int chars = 0;
+      while (end < title.size() && chars < kMaxTitleChars) {
+        end++;
+        while (end < title.size() && (static_cast<unsigned char>(title[end]) & 0xC0) == 0x80) end++;
+        chars++;
+      }
+      label = title.substr(0, end);
+      if (end < title.size()) label += "\u2026";
+      if (!label.empty()) label += " \u00b7 ";
     }
-    char label[96];
-    if (place.year == 0) {
-      snprintf(label, sizeof(label), "%s", where);
-    } else {
+    // The page within the chapter, as the status bar counts it. Without its total: a chapter still
+    // being laid out when the place was recorded had fewer pages than it ends up with.
+    char part[64];
+    snprintf(part, sizeof(part), tr(STR_PAGE_NUMBER_FORMAT), place.page + 1);
+    label += part;
+    if (place.year != 0) {
       // Same format as the status bar clock (HalClock::formatTime()).
       char time[12];
       const int hour = place.hour;
@@ -7961,15 +8079,16 @@ std::vector<std::string> EpubReaderActivity::recentPageLabels() const {
       }
       const int day = RecentPages::dayNumber(place.year, place.month, place.day);
       if (haveNow && day == today) {
-        snprintf(label, sizeof(label), "%s - %s", where, time);
+        snprintf(part, sizeof(part), " \u00b7 %s", time);
       } else if (haveNow && day == today - 1) {
-        snprintf(label, sizeof(label), "%s - %s %s", where, tr(STR_YESTERDAY), time);
+        snprintf(part, sizeof(part), " \u00b7 %s %s", tr(STR_YESTERDAY), time);
       } else {
-        snprintf(label, sizeof(label), "%s - %s %d, %s", where, I18N.get(kMonths[place.month - 1]),
+        snprintf(part, sizeof(part), " \u00b7 %s %d, %s", I18N.get(kMonths[place.month - 1]),
                  static_cast<int>(place.day), time);
       }
+      label += part;
     }
-    labels.emplace_back(label);
+    labels.push_back(std::move(label));
   }
   return labels;
 }
@@ -7986,7 +8105,7 @@ void EpubReaderActivity::goToRecentPage(const int index) {
     target.page = place.page;
     target.totalPages = place.totalPages;
     // applyProgressChange() resolves content offsets only for the horizontal layout.
-    target.hasVisibleTextOffset = place.hasOffset && !useVerticalText();
+    target.hasVisibleTextOffset = place.hasOffset;
     target.visibleTextOffset = place.offset;
   }
   // Also records the page left as Jump Back's origin.
@@ -8034,14 +8153,14 @@ void EpubReaderActivity::addBookmark() {
   if ((!section && !verticalSection) || !epub) {
     return;
   }
-  const int curPage = verticalSection ? verticalSection->currentPage : section ? section->currentPage : -1;
+  const int curPage = shownPage(-1);
   LOG_DBG("ERS", "Toggle bookmark at spine %d, page %d", currentSpineIndex, curPage);
   int currentPage;
   int pageCount;
   {
     RenderLock lock(*this);
-    pageCount = verticalSection ? verticalSection->pageCount : section->estimatedTotalPages();
-    currentPage = verticalSection ? verticalSection->currentPage : section->currentPage;
+    pageCount = chapterPageTotal(0);
+    currentPage = shownPage(0);
   }
 
   SavedProgressPosition progress = ProgressMapper::toSavedProgress(epub, getCurrentPosition());
@@ -8059,15 +8178,13 @@ void EpubReaderActivity::addBookmark() {
     currentPageBookmarked = false;
   } else {
     std::string pageText;
-    std::optional<uint32_t> verticalOffset;
+    std::optional<uint32_t> offset;
     if (verticalSection) {
       // The render task's warm tail re-faults the section's single page slot; read it under the lock.
       RenderLock lock(*this);
       const VerticalPage* vp = verticalSection->getPage();
       if (vp) pageText = PageTextExtractor::fromVerticalPage(*vp);
-      if (currentPage >= 0 && currentPage < verticalSection->pageCount) {
-        verticalOffset = verticalSection->getVisibleTextOffsetForPage(currentPage);
-      }
+      offset = visibleOffsetForPage(currentPage);
     } else if (section && currentPage >= 0 && currentPage < pageCount) {
       pageText = section->getTextFromSectionFile();
     }
@@ -8078,18 +8195,8 @@ void EpubReaderActivity::addBookmark() {
     entry.computedSpineIndex = currentSpineIndex;
     entry.computedChapterPageCount = pageCount;
     entry.computedChapterProgress = currentPage;
-    // Record the exact content offset so the bookmark lands correctly after any re-pagination.
-    // The two layouts own different section objects; never touch `section` while a vertical page
-    // is active (it is null in that mode).
-    std::optional<uint32_t> offset;
-    if (verticalSection) {
-      offset = verticalOffset;
-    } else if (section && currentPage >= 0 && currentPage < section->pageCount) {
-      // currentPageVisibleOffset was captured for this very page at its last render.
-      offset = currentPageVisibleOffset.has_value()
-                   ? currentPageVisibleOffset
-                   : section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage));
-    }
+    // The exact content offset, so the bookmark lands correctly after any re-pagination.
+    if (!verticalSection) offset = visibleOffsetForPage(currentPage);
     if (offset.has_value()) {
       entry.visibleTextOffset = *offset;
       entry.hasVisibleTextOffset = true;
@@ -8110,8 +8217,8 @@ void EpubReaderActivity::updateBookmarkFlag() {
     currentPageBookmarked = false;
     return;
   }
-  const int page = verticalSection ? verticalSection->currentPage : section->currentPage;
-  const int pageCount = verticalSection ? verticalSection->pageCount : section->estimatedTotalPages();
+  const int page = shownPage(0);
+  const int pageCount = chapterPageTotal(0);
   const ProgressRange pageRange = getPageProgressRange(epub, currentSpineIndex, page, pageCount);
   currentPageBookmarked = std::any_of(cachedBookmarks.begin(), cachedBookmarks.end(), [&](const BookmarkEntry& b) {
     return bookmarkMatchesProgress(b, currentSpineIndex, page, pageCount, pageRange);
@@ -8163,13 +8270,29 @@ int EpubReaderActivity::getProgressBasisPoints() const {
   return std::clamp(static_cast<int>(progress * 10000.0f + 0.5f), 0, 10000);
 }
 
+std::optional<uint32_t> EpubReaderActivity::visibleOffsetForPage(const int page) const {
+  if (page < 0 || page >= builtPageCount(0)) return std::nullopt;
+  if (verticalSection) return verticalSection->getVisibleTextOffsetForPage(page);
+  // The page on screen had its offset captured at load; reuse it rather than reopen the section file.
+  if (page == section->currentPage && currentPageVisibleOffset.has_value()) return currentPageVisibleOffset;
+  return section->getVisibleTextOffsetForPage(static_cast<uint16_t>(page));
+}
+
+int EpubReaderActivity::shownPage(const int fallback) const {
+  return verticalSection ? verticalSection->currentPage : section ? section->currentPage : fallback;
+}
+
+int EpubReaderActivity::builtPageCount(const int fallback) const {
+  return verticalSection ? verticalSection->pageCount : section ? section->pageCount : fallback;
+}
+
+int EpubReaderActivity::chapterPageTotal(const int fallback) const {
+  return verticalSection ? verticalSection->pageCount : section ? section->estimatedTotalPages() : fallback;
+}
+
 CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
-  const int currentPage = verticalSection ? verticalSection->currentPage
-                          : section       ? section->currentPage
-                                          : nextPageNumber;
-  const int totalPages = verticalSection ? verticalSection->pageCount
-                         : section       ? section->estimatedTotalPages()
-                                         : cachedChapterTotalPageCount;
+  const int currentPage = shownPage(nextPageNumber);
+  const int totalPages = chapterPageTotal(cachedChapterTotalPageCount);
   std::optional<uint16_t> paragraphIndex;
   if (section && currentPage >= 0 && currentPage < section->pageCount) {
     const uint16_t paragraphPage =
@@ -8182,20 +8305,10 @@ CrossPointPosition EpubReaderActivity::getCurrentPosition() const {
   CrossPointPosition localPos = {currentSpineIndex, currentPage, totalPages};
   localPos.hasResolvedSpineIndex = true;
   localPos.hasMappedPage = true;
-  // The vertical section reports the same offset units as the horizontal one, so a Japanese
-  // book read vertically anchors on exact content like any other. Querying only `section` here
-  // left every vertical position falling back to page/percentage, which re-paginates wrong when
-  // the layout settings change.
-  if (verticalSection && currentPage >= 0 && currentPage < verticalSection->pageCount) {
-    if (const auto offset = verticalSection->getVisibleTextOffsetForPage(currentPage)) {
-      localPos.visibleTextOffset = *offset;
-      localPos.hasVisibleTextOffset = true;
-    }
-  } else if (section && currentPage >= 0 && currentPage < section->pageCount) {
-    if (const auto offset = section->getVisibleTextOffsetForPage(static_cast<uint16_t>(currentPage))) {
-      localPos.visibleTextOffset = *offset;
-      localPos.hasVisibleTextOffset = true;
-    }
+  // Both layouts report the same offset units, so a position anchors on exact content in either.
+  if (const auto offset = visibleOffsetForPage(currentPage)) {
+    localPos.visibleTextOffset = *offset;
+    localPos.hasVisibleTextOffset = true;
   }
   if (paragraphIndex.has_value()) {
     localPos.paragraphIndex = *paragraphIndex;

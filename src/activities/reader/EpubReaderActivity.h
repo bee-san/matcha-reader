@@ -26,11 +26,20 @@
 #include "components/OptionPopup.h"
 #include "util/CjkScript.h"
 #include "util/RecentPages.h"
+#include "util/SentenceMining.h"
 
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
   std::unique_ptr<VerticalSection> verticalSection = nullptr;
+  // Position in the active layout (vertical or horizontal); `fallback` when no chapter is loaded.
+  int shownPage(int fallback) const;
+  // Pages laid out so far; while a horizontal chapter builds, only up to its build watermark.
+  int builtPageCount(int fallback) const;
+  // The chapter's page total: estimated while a horizontal chapter builds, exact otherwise.
+  int chapterPageTotal(int fallback) const;
+  // Content offset of a page of the current chapter in the active layout; nullopt past the built pages.
+  std::optional<uint32_t> visibleOffsetForPage(int page) const;
   // Spine index whose vertical section last failed to build (e.g. transient low-heap allocation
   // failure). Prevents an immediate automatic retry loop: without this, verticalSection.reset()
   // on failure leaves `!verticalSection` true, so the very next render() call retries the same
@@ -130,7 +139,6 @@ class EpubReaderActivity final : public ReaderActivity {
   // which recovers a transiently corrupt cache; capped so a persistently bad page can't spin forever.
   uint8_t pageLoadRetryCount = 0;
   static constexpr uint8_t MAX_PAGE_LOAD_RETRIES = 3;
-  bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
   bool showBookmarkMessage = false;
   // "No dictionary set" popup, shown when a lookup is triggered without a configured dictionary.
@@ -143,12 +151,14 @@ class EpubReaderActivity final : public ReaderActivity {
   StrId clippingMessage = StrId::STR_CLIPPING_SAVED;
   unsigned long clippingMessageTime = 0UL;
   bool currentPageBookmarked = false;
-  // Idle-time glyph prewarm: after a page settles, scan the LIKELY next page
-  // (scan mode draws nothing) and load its missing glyphs from SD during idle,
-  // so the next turn's in-render prewarm is a cache hit instead of ~100 ms of
-  // SD reads on the page-turn critical path. One attempt per position.
+  // Idle-time glyph prewarm: after a page settles, scan the pages after it (scan
+  // mode draws nothing) and load their missing glyphs during idle, so the next
+  // turn's in-render prewarm is a cache hit instead of ~100 ms of SD reads on the
+  // page-turn critical path. idlePrewarmOffset counts the pages warmed ahead of
+  // this position (FontCacheManager::getIdleLookaheadPages caps it).
   int idlePrewarmSpine = -1;
   int idlePrewarmPage = -1;
+  int idlePrewarmOffset = 0;
   unsigned long lastRenderCompleteMs = 0;
   bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
   std::vector<BookmarkEntry> cachedBookmarks;
@@ -348,6 +358,9 @@ class EpubReaderActivity final : public ReaderActivity {
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
   int lastSavedPageCount = -1;
+  // Chapter title shown in the status bar, cached per spine item.
+  mutable int statusTitleSpine = -1;
+  mutable std::string statusTitle;
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft, bool glyphsAlreadyWarm = false,
@@ -632,13 +645,13 @@ class EpubReaderActivity final : public ReaderActivity {
   // Kept in jump.bin across sleep and reopening, consumed on load like links.bin.
   void saveJumpOrigin() const;
   void loadJumpOrigin();
-  // Last 5 pages read: written by saveProgress() on the render task, read on the loop task.
+  // Recent Pages: written by saveProgress() on the render task, read on the loop task.
   RecentPages recentPages;
   mutable std::mutex recentPagesMutex;
-  // The place picked in the Last 5 pages read popup, for onReaderMenuConfirm(); 0 is the newest.
+  // The place picked in the Recent Pages popup, for onReaderMenuConfirm(); 0 is the newest.
   int pendingRecentPageIndex = -1;
   void noteRecentPage(int spineIndex, int page, int pageCount, uint8_t percent, std::optional<uint32_t> offset);
-  // Places before the page on screen, as "Page 396 - 12:32 PM"; empty when there are none.
+  // Places before the page on screen, as "Chapter · Page 3 · 21:14"; empty when there are none.
   std::vector<std::string> recentPageLabels() const;
   bool hasRecentPages() const;
   void goToRecentPage(int index);
@@ -668,6 +681,12 @@ class EpubReaderActivity final : public ReaderActivity {
   void renderOverlay();
   std::string currentChapterTitle() const;
   int currentTocIndex() const;
+  // What a lookup screen needs from the book: the card's book fields, and where the word is for
+  // vocabulary history. `pageIndex` is 0-based in the current chapter.
+  sentencemining::BookContext lookupContext(std::string nextPageText, std::string language, int pageIndex);
+  // The book's series, read once for vocabulary history; for the Epub it was read from.
+  std::unique_ptr<Epub::SyncMetadata> vocabularyMetadata;
+  const Epub* vocabularyMetadataBook = nullptr;
   // The open control panel's controls, in the order shown. Text: size, font, Focus Reading or
   // Furigana, more settings; Page: spacing, margins, alignment, orientation, writing. Alignment and
   // Focus Reading are for non-CJK books; Writing and Furigana for books that can be read vertically.
@@ -736,7 +755,8 @@ class EpubReaderActivity final : public ReaderActivity {
   void onLookupPanelResult(const ActivityResult& result);
   int clippingAtPoint(const Page& page, int x, int y) const;
   // True when (x, y) is on or near a word of the page on screen; a margin is not.
-  bool textAtPoint(int x, int y);
+  // reach: how far around text still counts, in half lines (1 = the usual half line).
+  bool textAtPoint(int x, int y, int reach = 1);
   // The horizontal page's text lines as the render task drew them, so textAtPoint() can answer on
   // the loop task without the render lock, which the render task holds for the whole e-ink refresh.
   // 64 lines x 8 bytes live in the activity; a page with more falls back to the locked scan.
@@ -893,6 +913,7 @@ class EpubReaderActivity final : public ReaderActivity {
   // built without them silently fails every parameter check and rebuilds the chapter. Build
   // every horizontal spec through here rather than repeating the fixups at each call site.
   ReaderRenderSpec readerSpec(uint16_t viewportWidth, uint16_t viewportHeight) const;
+  void syncBookFonts();
   void restoreSavedPosition();
   bool useVerticalText() const;
   // True when page turning should be reversed for this book: the toggle is on AND this book

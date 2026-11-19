@@ -2,6 +2,7 @@
 
 #include <BitmapHelpers.h>
 #include <BmpToBmpConverter.h>
+#include <BoardConfig.h>
 #include <DictIndex.h>
 #include <Epub.h>
 #include <Epub/converters/PngToFramebufferConverter.h>
@@ -763,6 +764,13 @@ void SleepActivity::onEnter() {
     GUI.drawPopup(renderer, tr(STR_ENTERING_SLEEP));
   }
 
+  // Every mode below replaces the whole screen. One clean straight to the new
+  // image leaves the old screen visible, so clean to white first (BLANK is that clean).
+  if (SETTINGS.sleepScreen != CrossPointSettings::SLEEP_SCREEN_MODE::BLANK) {
+    renderer.clearScreen();
+    renderer.displayBuffer(kSleepClean);
+  }
+
   switch (SETTINGS.sleepScreen) {
     case (CrossPointSettings::SLEEP_SCREEN_MODE::BLANK):
       return renderBlankSleepScreen();
@@ -845,10 +853,9 @@ void SleepActivity::renderCustomSleepScreen() const {
   renderDefaultSleepScreen();
 }
 
-// Sleep screens paint with a single HALF refresh (stock parity): the OEM X4
-// firmware's only clean refresh in normal operation is the single-pass 0xD7
-// sequence, used once for the sleep image. It never runs the multi-flash GC
-// waveform (0xF7) that FULL_REFRESH selects (#2471's blinking complaint).
+// Sleep screens paint with kSleepClean (after the white clean in onEnter): HALF, not
+// the multi-flash GC waveform (0xF7) that FULL_REFRESH selects (#2471's blinking
+// complaint), except on Metalio.
 void SleepActivity::renderDefaultSleepScreen() const {
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
@@ -918,7 +925,11 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
     return;
   }
   if (absolute) {
-    cleanBeforeAbsoluteGray(renderer);
+    // Full-screen modes already cleaned to white in onEnter; Cover + Transparent
+    // skips that clean, so its plain-cover fallback cleans here.
+    if (preserveBackground || SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::COVER_TRANSPARENT) {
+      cleanBeforeAbsoluteGray(renderer);
+    }
     if (!renderer.displayGrayscaleBase(sleepGrayscaleMode(renderer))) {
       // The B/W sleep image is already in the framebuffer; show that rather than leaving the
       // previous screen up.
@@ -1172,8 +1183,16 @@ void SleepActivity::renderCoverSleepScreen() const {
 }
 
 void SleepActivity::renderLastScreenSleepScreen() const {
-  const auto pageHeight = renderer.getScreenHeight();
-  renderer.drawImage(MoonIcon, 0, pageHeight - MOONICON_HEIGHT, MOONICON_WIDTH, MOONICON_HEIGHT);
+  int top, right, bottom, left;
+  renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+  // Clear the rounded bottom corner too: how far its arc cuts in at the icon's bottom row.
+  const int radius = BoardConfig::ACTIVE.bottomCornerRadius != 0 ? BoardConfig::ACTIVE.bottomCornerRadius
+                                                                 : BoardConfig::ACTIVE.cornerRadius;
+  const int d = std::max(0, radius - bottom);
+  const int intrusion =
+      radius > 0 ? static_cast<int>(std::ceil(radius - std::sqrt(static_cast<float>(radius * radius - d * d)))) : 0;
+  renderer.drawImage(MoonIcon, std::max(left, intrusion), renderer.getScreenHeight() - bottom - MOONICON_HEIGHT,
+                     MOONICON_WIDTH, MOONICON_HEIGHT);
   // Only the moon differs from the displayed frame, so a differential FAST
   // update adds it without the flashing clean pass (which sweeps the panel
   // through the inverse — a full white flash on a night-mode page).
@@ -1215,11 +1234,15 @@ struct DepartureCat {
   GrayLogo::Size size;
   int width;
   int height;
+  // The built-in cat draws nothing in the leftmost openLeft columns of its top openRows rows, so a
+  // row's label may reach into that corner.
+  int openLeft;
+  int openRows;
 };
 
 // Largest first: the screen uses the biggest cat that leaves the rows room.
-constexpr DepartureCat DEP_CATS[] = {{GrayLogo::Size::Regular, GrayLogo::WIDTH, GrayLogo::HEIGHT},
-                                     {GrayLogo::Size::Small, GrayLogo::SMALL_WIDTH, GrayLogo::SMALL_HEIGHT}};
+constexpr DepartureCat DEP_CATS[] = {{GrayLogo::Size::Regular, GrayLogo::WIDTH, GrayLogo::HEIGHT, 24, 72},
+                                     {GrayLogo::Size::Small, GrayLogo::SMALL_WIDTH, GrayLogo::SMALL_HEIGHT, 0, 0}};
 
 // Draws one bitmap from the inflated lettering, a horizontal run of ink at a time.
 void drawDepartureBitmap(const GfxRenderer& renderer, const uint8_t* type, const DepartureBitmap& bitmap, const int x,
@@ -1307,15 +1330,28 @@ void SleepActivity::renderDeparturesSleepScreen() const {
   const int blockH = DepWordNext.height + 16 + DepWordOneMore.height + 14 + DepWordChapter.height;
   const int rowsRight =
       DEP_MARGIN + std::max<int>(DEP_TILES * (layout.tileW + layout.tileGap), DepWordMinutesThisWeek.width + 2);
+  // Clear of the bezel and of a rounded bottom corner: on the EEGO A4 the bezel covers 8 px at the
+  // right and 16 at the bottom, and the corner curves in over 40 px; the cat's box keeps its corner
+  // inside that curve (about 30% of the radius in from each edge), the same distance from the right
+  // as from the bottom. 10 px wherever that is less.
+  const Rect content = UITheme::getContentArea(renderer);
+  const int corner = BoardConfig::ACTIVE.bottomCornerRadius != 0 ? BoardConfig::ACTIVE.bottomCornerRadius
+                                                                 : BoardConfig::ACTIVE.cornerRadius;
+  const int bezel = std::max(pageWidth - content.x - content.width, pageHeight - content.y - content.height);
+  const int catInset = std::max(10, bezel + corner * 3 / 10);
+  const bool builtinCat = !GrayLogo::customLogoPresent();
   const DepartureCat* cat = nullptr;
   int catX = 0;
   int catY = 0;
   int rowStep = 0;
   for (const DepartureCat& candidate : DEP_CATS) {
-    const int x = pageWidth - candidate.width - 10;
-    const int top = pageHeight - candidate.height - 10;
+    const int x = pageWidth - candidate.width - catInset;
+    const int top = pageHeight - candidate.height - catInset;
     int limit = top + candidate.height / 2 - blockH / 2 - 16;
-    if (rowsRight + 8 > x) limit = std::min(limit, top + 8);
+    if (rowsRight + 8 > x) {
+      const bool besideOpenCorner = builtinCat && rowsRight + 8 <= x + candidate.openLeft;
+      limit = std::min(limit, top + (besideOpenCorner ? candidate.openRows : 8));
+    }
     const int step = (limit - layout.firstRow - layout.tileH - labelH) / 2;
     if (step >= minRowStep) {
       cat = &candidate;

@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "util/HomeButtonInput.h"
+#include "util/PowerButtonInput.h"
 #include "util/SideButtonActions.h"
 
 class CrossPointSettings : public PersistableStore<CrossPointSettings> {
@@ -213,6 +214,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     PWR_READER_MENU = 11,
     PWR_SYNC_STATS_CLOCK = 12,
     PWR_SYNC_CLOCK = 13,
+    // Upstream's 10: the X4 Pro double-click default, appended like the entries above.
+    PWR_FRONTLIGHT = 14,
     SHORT_PWRBTN_COUNT
   };
 
@@ -368,9 +371,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t textAntiAliasing = 1;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
-  // X4 Pro: double-click power toggles the frontlight. Disabling frees the
-  // power button for shortPwrBtn actions without the double-click wait.
-  uint8_t doubleClickPwrLight = 1;
+  // Power double click (see hasPowerDoubleClick()); Ignore disables the
+  // single-click delay.
+  uint8_t doublePwrBtn = defaultDoublePwrBtn();
   // Power + Side Up, a SIDE_BUTTON_ACTION. Sleep, Refresh and the syncs work on any screen; the
   // rest only in a book. Default is never offered: the combination has no built-in role.
   uint8_t powerUpAction = SIDE_BTN_NONE;
@@ -432,6 +435,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // available size (and persists the snap) whenever the family changes.
   uint8_t fontPointSize = DEFAULT_FONT_POINT_SIZE;
   uint8_t lineSpacing = LINE_SPACING_120;
+  // Draw a book in its own embedded fonts (@font-face) where it ships them; vector-font boards
+  // only. Per text profile like the font itself.
+  uint8_t publisherFonts = 0;
   // Text profiles: books in each script keep their own font, size and spacing. The live fields
   // (fontFamily, sdFontFamilyName, fontPointSize, lineSpacing, characterSpacing, wordSpacing) hold
   // the Latin profile; a book in another script swaps its profile in while it is open
@@ -445,6 +451,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     uint8_t wordSpacing = 100;
     uint8_t fontFamily = NOTOSERIF;
     char sdFontFamilyName[32] = "";
+    uint8_t publisherFonts = 0;  // see CrossPointSettings::publisherFonts
     bool operator==(const TextProfile&) const = default;
   };
   TextProfile liveTextProfile() const;
@@ -505,6 +512,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t uiTheme = BoardConfig::hasTouch() ? COVER_GRID : LYRA;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;
+  // The fading fix compensates the X4/X3 grayscale waveforms; other boards never get it.
+  static bool fadingFixSupported() {
+    const auto board = BoardConfig::ACTIVE.board;
+    return board == BoardConfig::Board::XteinkX4 || board == BoardConfig::Board::XteinkX3 ||
+           board == BoardConfig::Board::XteinkX3Uc8279;
+  }
   // Power button return from footnotes (1 = enabled, 0 = disabled). Read by
   // EpubReaderActivity::loop, and only meaningful while shortPwrBtn == FOOTNOTES -- which is also
   // the only time either settings UI offers it.
@@ -526,11 +539,15 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t pluginHubPromptHidden = 0;
   // Show hidden files/directories (starting with '.') in the file browser (0 = hidden, 1 = show)
   uint8_t showHiddenFiles = 0;
+  // Show each file's extension at the end of its row in the file browser (0 = hide, 1 = show)
+  uint8_t showFileExtensions = 1;
   // Show the title and author read from inside each book rather than its
   // filename. Users can disable this to make index rebuilds skip EPUB parsing.
   uint8_t libraryUseMetadata = 1;
   // Cover grid by default: it is the reason this fork keeps its own library screen.
   uint8_t libraryView = LIBRARY_VIEW_COVERS;
+  // Library Recent tab lists only opened books, without the by-arrival list below them (0 = off, 1 = on)
+  uint8_t libraryRecentOpenedOnly = 0;
   // Remove a book from the Recent Books list when its End-of-Book screen is reached (0 = off, 1 = on)
   uint8_t removeReadBooksFromRecents = 0;
   // Move epub to /Read/ folder on SD card when finished (0 = disabled, 1 = enabled)
@@ -556,6 +573,16 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     WORD_LOOKUP_FONT_SIZE_COUNT
   };
   uint8_t wordLookupFontSize = WORD_LOOKUP_FONT_SMALL;
+  // Page translation's target language: an index into gemini::TARGET_LANGUAGES (0 = English).
+  uint8_t translationTarget = 0;
+  // Flashcards from the sentence-mining export (Settings > Flashcards). The tab is opt-in.
+  uint8_t flashcardsTab = 0;
+  uint8_t flashcardVacation = 0;     // reviews paused; see flashcards::syncVacation
+  uint8_t flashcardRetention = 2;    // 80/85/90/95 %
+  uint8_t flashcardNewPerDay = 1;    // 5/10/20/30/50
+  uint8_t flashcardMaxInterval = 3;  // 1 month / 6 months / 1 year / no limit
+  // Append every successful dictionary lookup to /Vocabulary.txt (default off).
+  uint8_t vocabularyHistoryEnabled = 0;
   // Reader menu open gesture (SHOW_READER_MENU: off / center tap / bottom-edge
   // up-swipe). Only surfaced on home-key boards, where Home is the capacitive
   // key and the bottom edge is free; elsewhere it stays at the Tap default.
@@ -612,8 +639,20 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   SdFontIdResolver sdFontIdResolver = nullptr;
   void* sdFontResolverCtx = nullptr;
 
+  // Every board offers a power double-click action except those whose power
+  // button is also Confirm.
+  static bool hasPowerDoubleClick() {
+    return BoardConfig::ACTIVE.inputStyle != BoardConfig::InputStyle::DigitalConfirmPowerHold;
+  }
+  // Frontlight toggle where it shipped enabled; off elsewhere, so a single
+  // click has no double-click wait unless the user picks an action.
+  static uint8_t defaultDoublePwrBtn() {
+    return (BoardConfig::isX4Pro() || BoardConfig::isEegoA4()) ? PWR_FRONTLIGHT : IGNORE;
+  }
   uint16_t getPowerButtonDuration() const {
-    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
+    if (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) return 10;
+    // EEGO A4: the hold must last 400 ms longer.
+    return PowerButtonInput::LONG_PRESS_MS + (BoardConfig::isEegoA4() ? 400 : 0);
   }
   int getReaderFontId() const;
   /// Built-in Noto Serif at the current reader size, used when a selected CJK-only

@@ -298,8 +298,8 @@ void ChapterHtmlSlimParser::pushDecorationStyleEntry(const CssTextDecoration def
 // A block's font-size on an SD-card reader font: that font is resident at one size, so the block
 // cannot switch font (cssBlockFontId). Scale its words' bitmaps instead, as an inline <span>
 // font-size does, so a heading is not stuck at body size. Popped with the element.
-void ChapterHtmlSlimParser::pushBlockFontScaleEntry(const CssStyle& cssStyle) {
-  const int32_t tag = cssBlockFontScaleTag(cssStyle, fontId);
+void ChapterHtmlSlimParser::pushBlockFontScaleEntry(const CssStyle& cssStyle, const int baseFontId) {
+  const int32_t tag = cssBlockFontScaleTag(cssStyle, baseFontId);
   if (tag == 0) return;
   StyleStackEntry entry;
   entry.depth = depth;
@@ -307,6 +307,14 @@ void ChapterHtmlSlimParser::pushBlockFontScaleEntry(const CssStyle& cssStyle) {
   entry.fontIdOverride = tag;
   entry.fontScale = cssFontSizeScale(cssStyle);
   inlineStyleStack.push_back(entry);
+}
+
+// The font a block's font-size is measured against: the publisher font it names or inherits
+// (resident at one size, so sizes scale its glyphs), else the reader font.
+int ChapterHtmlSlimParser::blockBaseFontId(const CssStyle& cssStyle) const {
+  (void)cssStyle;  // its own family, if any, is already the innermost scope
+  const int family = inheritedFamilyFontId();
+  return family != 0 ? family : fontId;
 }
 
 // Update effective bold/italic/decorations based on block style and inline style stack
@@ -633,6 +641,21 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   partWordBufferIndex = 0;
   nextWordContinues = false;
   listItemBulletOnly = false;
+
+  // A long run without spaces (CJK: a word per character) arrives in one callback; without a
+  // check here its whole block would be laid out at once, which allocates per word.
+  softFlushIfLong("run");
+}
+
+void ChapterHtmlSlimParser::softFlushIfLong(const char* reason) {
+  // Keep token growth bounded: CSS-heavy spans can fragment text into many tiny
+  // words, so flush earlier when embedded CSS is active. We still keep the
+  // "exclude last line" behavior to preserve paragraph flow across chunks.
+  if (!currentTextBlock || inRuby) return;
+  const size_t words = currentTextBlock->size();
+  if (words <= (embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS)) return;
+  LOG_DBG("EHP", "Text %s soft flush (%u words)", reason, static_cast<unsigned>(words));
+  makePages(/*includeLastLine=*/false);
 }
 
 // start a new text block if needed
@@ -1051,6 +1074,8 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   if (currentTextBlock) {
     // already have a text block running and it is empty - just reuse it
     if (currentTextBlock->isEmpty()) {
+      // The reused block may have been created on the other side of a heading boundary.
+      currentTextBlock->setHyphenationEnabled(blockHyphenationEnabled());
       // The stack accumulates horizontal margins and text properties from ancestors.
       // Vertical margins are per-element and not inherited through the stack, but
       // container elements deposit their vertical margins on the empty block when they
@@ -1098,12 +1123,12 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   // block is flushed so the chapter starts on a fresh page.
   flushPendingAnchor();
   currentTextBlock =
-      makeUniqueNoThrow<ParsedText>(hyphenationEnabled, focusReadingEnabled, blockStyle, paragraphIndentSpaces);
+      makeUniqueNoThrow<ParsedText>(blockHyphenationEnabled(), focusReadingEnabled, blockStyle, paragraphIndentSpaces);
   if (!currentTextBlock) {
     // Evict rebuildable caches and retry once before failing the build.
     freeink::MemoryManager::instance().ensureFree(4 * 1024);
-    currentTextBlock =
-        makeUniqueNoThrow<ParsedText>(hyphenationEnabled, focusReadingEnabled, blockStyle, paragraphIndentSpaces);
+    currentTextBlock = makeUniqueNoThrow<ParsedText>(blockHyphenationEnabled(), focusReadingEnabled, blockStyle,
+                                                     paragraphIndentSpaces);
   }
   if (!currentTextBlock) {
     LOG_ERR("EHP", "OOM: ParsedText");
@@ -1123,6 +1148,7 @@ void ChapterHtmlSlimParser::applyDropCap(const char* tagName, const std::string&
   if (!cssParser->resolveFirstLetterFontSize(tagName, classAttr, &cssPath, firstLetterSize)) {
     return;
   }
+  if (cardBasePx > 0.0f) firstLetterSize = cardFontSize(firstLetterSize, cardBasePx);
 
   // Reuse the block ladder's own unit handling (%, em, rem, pt) instead of re-deriving it:
   // `font-size: 300%` means the same multiple of the reader's size on a pseudo-element as it
@@ -1616,6 +1642,14 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   if (strcasecmp(name, "body") == 0 || strcasecmp(name, "html") == 0) {
     cssStyle.defined.fontSize = 0;
   }
+  if (self->cardBasePx > 0.0f && cssStyle.hasFontSize()) {
+    cssStyle.fontSize = cardFontSize(cssStyle.fontSize, self->cardBasePx);
+  }
+
+  if (cssStyle.hasFontFamily() && self->fontFamilyScopeCount < MAX_FONT_FAMILY_SCOPES) {
+    self->fontFamilyScopes[self->fontFamilyScopeCount++] = {static_cast<uint16_t>(self->cssPath.depth()),
+                                                            bookfonts::fontIdForFamily(cssStyle.fontFamilyKey)};
+  }
 
   // white-space is inherited: open a scope when this element sets it (or is a <pre>).
   {
@@ -1880,6 +1914,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               ext = resolvedPath.substr(extPos);
             }
             std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
+            std::string pixelCachePath;  // a standalone page's own cache folder, when it has one
 
             {
               // Probe the dimensions from the entry's first bytes (early-aborted
@@ -1888,11 +1923,56 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               // ImageBlock's lazy extractor). This is what keeps first-open of an
               // image-heavy chapter from stalling for seconds per image.
               ImageDimensions dims = {0, 0};
-              ImageDimsProbe headerProbe;
-              self->epub->readItemContentsToStream(resolvedPath, headerProbe, 1024, /*allowEarlyStop=*/true);
-              bool gotDimensions = headerProbe.getDimensions(dims);
+              bool gotDimensions = false;
+              // A standalone page (a flashcard face) has no book: its images are plain files next to
+              // it, used in place, never extracted or removed.
+              const bool standalone = self->epub == nullptr;
+              if (standalone) {
+                cachedImagePath = resolvedPath;
+                if (!self->pixelCacheDir.empty()) {
+                  // Named by its path below the page's folder, '/' as '_': "x/a.png" and "a.png" keep
+                  // apart, as they did when each was cached next to itself.
+                  const std::string base = FsHelpers::normalisePath(self->contentBase);
+                  std::string name = resolvedPath.compare(0, base.size(), base) == 0 && !base.empty()
+                                         ? resolvedPath.substr(base.size())
+                                         : resolvedPath;
+                  while (!name.empty() && name[0] == '/') name.erase(0, 1);
+                  std::replace(name.begin(), name.end(), '/', '_');
+                  const size_t dot = name.rfind('.');
+                  if (dot != std::string::npos) name.resize(dot);
+                  pixelCachePath = self->pixelCacheDir + name + ".pxc";
+                }
+                // From the header: a PNG decoder needs a 43 KB block just to read the size.
+                bool opened = false;
+                // normalisePath() drops the leading slash of an absolute card path.
+                const std::string filePath = resolvedPath[0] == '/' ? resolvedPath : "/" + resolvedPath;
+                {
+                  HalFile file;
+                  opened = Storage.openFileForRead("EHP", filePath, file);
+                  if (opened) {
+                    ImageDimsProbe probe;
+                    uint8_t chunk[128];
+                    size_t total = 0;
+                    int n;
+                    while (total < 64 * 1024 && !probe.getDimensions(dims) &&
+                           (n = file.read(chunk, sizeof(chunk))) > 0) {
+                      probe.write(chunk, static_cast<size_t>(n));
+                      total += static_cast<size_t>(n);
+                    }
+                    gotDimensions = probe.getDimensions(dims);
+                  }
+                }
+                if (opened && !gotDimensions) {  // a format the header probe does not read (BMP)
+                  ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(filePath);
+                  gotDimensions = decoder && decoder->getDimensions(filePath, dims);
+                }
+              } else {
+                ImageDimsProbe headerProbe;
+                self->epub->readItemContentsToStream(resolvedPath, headerProbe, 1024, /*allowEarlyStop=*/true);
+                gotDimensions = headerProbe.getDimensions(dims);
+              }
 
-              if (!gotDimensions) {
+              if (!gotDimensions && !standalone) {
                 // Retry with framebuffer scratch when the heap cannot fit the inflate window.
                 GfxRenderer::FrameBufferLoan probeLoan(self->renderer);
                 ImageDimsProbe retryProbe;
@@ -1900,7 +1980,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 gotDimensions = retryProbe.getDimensions(dims);
               }
 
-              if (!gotDimensions) {
+              if (!gotDimensions && !standalone) {
                 // No header within the stream (rare) — fall back to extracting the
                 // whole image and probing the file. That can take seconds, so
                 // surface the indexing popup first (single-shot per parser).
@@ -1963,7 +2043,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
               // the reserved box. Costs a too-generous reservation on the failure path, which is
               // strictly better than losing the image. Falls through to the old behaviour when
               // there is no href to recover from, which is the only genuinely unrecoverable case.
-              if (!gotDimensions && !resolvedPath.empty()) {
+              if (!gotDimensions && !resolvedPath.empty() && !standalone) {
                 // Never leave a partial behind: render() skips lazy extraction when the file
                 // already exists, and would then decode a truncated image.
                 Storage.remove(cachedImagePath.c_str());
@@ -2148,6 +2228,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     LOG_ERR("EHP", "Failed to create inline ImageBlock");
                     return;
                   }
+                  if (!pixelCachePath.empty()) inlineBlock->setCachePath(pixelCachePath);
                   const int inlineX = std::max(0, (self->viewportWidth - displayWidth) / 2);
                   auto inlineImage = makeUniqueNoThrow<PageImage>(std::move(inlineBlock), static_cast<int16_t>(inlineX),
                                                                   static_cast<int16_t>(self->currentPageNextY));
@@ -2197,7 +2278,10 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 // again, check render()'s rotated branch before touching this one.
                 const bool viewportIsPortrait = self->viewportHeight > self->viewportWidth;
                 const bool imageIsLandscape = dims.width > dims.height;
-                const bool rotateImage = dims.width > 0 && dims.height > 0 && (viewportIsPortrait == imageIsLandscape);
+                // A flashcard face (no book) keeps its pictures upright: its viewport is a box on
+                // the screen, so the rotated frame's margin would shrink them to a stamp.
+                const bool rotateImage = self->epub != nullptr && dims.width > 0 && dims.height > 0 &&
+                                         (viewportIsPortrait == imageIsLandscape);
 
                 // Apply top margin from container block. Clamp it so the image never
                 // overflows the page bottom: a full-viewport-height image leaves no room
@@ -2249,12 +2333,17 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 }
                 if (!imageBlock) {
                   LOG_ERR("EHP", "Failed to create ImageBlock");
+                  self->layoutOom = true;
+                  self->depth += 1;
                   return;
                 }
+                if (!pixelCachePath.empty()) imageBlock->setCachePath(pixelCachePath);
                 auto pageImage = makeUniqueNoThrow<PageImage>(std::move(imageBlock), static_cast<int16_t>(xPos),
                                                               static_cast<int16_t>(yPos));
                 if (!pageImage) {
                   LOG_ERR("EHP", "Failed to create PageImage");
+                  self->layoutOom = true;
+                  self->depth += 1;
                   return;
                 }
                 self->currentPage->elements.push_back(std::move(pageImage));
@@ -2286,7 +2375,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 return;
               } else {
                 LOG_ERR("EHP", "Failed to get image dimensions");
-                Storage.remove(cachedImagePath.c_str());
+                // A card's image is used in place: it is the deck's own file, not an extracted copy.
+                if (!standalone) Storage.remove(cachedImagePath.c_str());
               }
             }
           }  // isFormatSupported
@@ -2438,11 +2528,17 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   // CSS em inside a block resolves against that block's OWN font size, so an element with a
   // font-size gets its margins/padding/indent measured in the larger em too.
   const int blockFontId = cssBlockFontId(cssStyle, self->fontId);
+  const int blockBaseFontId = self->blockBaseFontId(cssStyle);
+  // A block in an inherited publisher font that sets no font of its own is drawn in that font.
+  const auto withFamily = [&](BlockStyle style) {
+    if (style.fontId == 0 && blockBaseFontId != self->fontId) style.fontId = blockBaseFontId;
+    return style;
+  };
   const float emSize =
       static_cast<float>(self->renderer.getFontAscenderSize(blockFontId != 0 ? blockFontId : self->fontId));
   const auto userAlignmentBlockStyle =
-      BlockStyle::fromCssStyle(cssStyle, emSize, static_cast<CssTextAlign>(self->paragraphAlignment),
-                               self->viewportWidth, self->honorBookInsets, self->fontId);
+      withFamily(BlockStyle::fromCssStyle(cssStyle, emSize, static_cast<CssTextAlign>(self->paragraphAlignment),
+                                          self->viewportWidth, self->honorBookInsets, blockBaseFontId));
 
   // Defer every block border until its content is placed. This keeps top/bottom pairs together
   // across page breaks and lets bottom-only heading/worksheet rules render at all.
@@ -2496,19 +2592,20 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     const auto headingAlignment = self->paragraphAlignment == static_cast<uint8_t>(CssTextAlign::None)
                                       ? CssTextAlign::Left
                                       : static_cast<CssTextAlign>(self->paragraphAlignment);
-    auto headerBlockStyle = BlockStyle::fromCssStyle(cssStyle, emSize, headingAlignment, self->viewportWidth,
-                                                     self->honorBookInsets, self->fontId);
+    auto headerBlockStyle = withFamily(BlockStyle::fromCssStyle(cssStyle, emSize, headingAlignment, self->viewportWidth,
+                                                                self->honorBookInsets, blockBaseFontId));
     headerBlockStyle.textAlignDefined = true;
     if (self->embeddedStyle && cssStyle.hasTextAlign()) {
       headerBlockStyle.alignment = cssStyle.textAlign;
     }
+    self->headingDepth = std::min(self->headingDepth, self->depth);
     auto accumulated =
         self->blockStyleStack.back().getCombinedBlockStyle(headerBlockStyle, BlockStyle::CombineAxis::Horizontal);
     self->fitStyleInsideBox(accumulated);
     self->blockStyleStack.push_back(accumulated);
     self->startNewTextBlock(accumulated.withoutBottom());
     self->currentBlockIsHeading = true;
-    self->pushBlockFontScaleEntry(cssStyle);
+    self->pushBlockFontScaleEntry(cssStyle, blockBaseFontId);
     // AFTER startNewTextBlock: that call flushes the PREVIOUS block, which must stay on the page
     // it was already on. The break is spent by the first block laid out from here on.
     if (cssStyle.pageBreakBefore() == CssPageBreak::Always && !self->forcedBreakTaken) self->pendingForcedBreak = true;
@@ -2559,7 +2656,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       // On the block itself, never on the style stack: a drop cap belongs to this one
       // paragraph, and the stack is what every nested and sibling block inherits from.
       self->applyDropCap(name, classAttr);
-      self->pushBlockFontScaleEntry(cssStyle);
+      self->pushBlockFontScaleEntry(cssStyle, blockBaseFontId);
       // See the header branch above: raised only once the previous block has been flushed.
       if (cssStyle.pageBreakBefore() == CssPageBreak::Always && !self->forcedBreakTaken) {
         self->pendingForcedBreak = true;
@@ -2708,7 +2805,11 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     const bool inheritedTableTextAlign = self->tableDepth >= 1 && cssStyle.hasTextAlign();
     if (cssStyle.hasFontWeight() || cssStyle.hasFontStyle() || cssStyle.hasTextDecoration() ||
         cssStyle.hasDirection() || cssStyle.hasVerticalAlign() || cssStyle.hasTextEmphasis() ||
-        cssStyle.hasFontVariant() || cssStyle.hasTextTransform() || cssStyle.hasFontSize() || inheritedTableTextAlign) {
+        cssStyle.hasFontVariant() || cssStyle.hasTextTransform() || cssStyle.hasFontSize() ||
+        (cssStyle.hasFontFamily() && bookfonts::isBookFont(self->inheritedFamilyFontId())) ||
+        (cssStyle.hasFontFamily() && self->currentTextBlock &&
+         bookfonts::isBookFont(self->currentTextBlock->getBlockStyle().fontId)) ||
+        inheritedTableTextAlign) {
       // Before the flush below, which would make an empty block look non-empty.
       self->applyInlineDropCap(cssStyle);
       // Flush buffer before style change so preceding text gets current style
@@ -2766,6 +2867,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
           // instead, so `<small>` really is small rather than silently rendering at body size.
           entry.fontIdOverride = fontScaleTagForScale(entry.fontScale);
         }
+      }
+      // <html>/<body> name the book's font through the family scopes, which blocks inherit; as a
+      // word font it would also override the font a heading inside sets for itself.
+      if (cssStyle.hasFontFamily() && !entry.setsParagraphDirection) {
+        // A word slot holds one font, so a span naming a publisher font draws it at block size.
+        const int familyFontId = self->inheritedFamilyFontId();
+        entry.hasFontId = true;
+        entry.fontIdOverride = familyFontId != 0 ? familyFontId : self->fontId;
+        entry.fontScale = 1.0f;
       }
       self->inlineStyleStack.push_back(entry);
       self->updateEffectiveInlineStyle();
@@ -3020,16 +3130,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     return;
   }
 
-  // Keep token growth bounded: CSS-heavy spans can fragment text into many tiny
-  // words, so flush earlier when embedded CSS is active. We still keep the
-  // "exclude last line" behavior to preserve paragraph flow across chunks.
-  const size_t blockWordCount = self->currentTextBlock->size();
-  const size_t softFlushThreshold =
-      self->embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
-  if (blockWordCount > softFlushThreshold && !self->inRuby) {
-    LOG_DBG("EHP", "Text block soft flush (%u words)", static_cast<unsigned>(blockWordCount));
-    self->makePages(/*includeLastLine=*/false);
-  }
+  self->softFlushIfLong("block");
 }
 
 void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const XML_Char* s, const int len) {
@@ -3052,6 +3153,11 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   auto* self = static_cast<ChapterHtmlSlimParser*>(userData);
   if (self->nonVisibleTextDepth > 0) {
     self->nonVisibleTextDepth--;
+  }
+
+  if (self->fontFamilyScopeCount > 0 &&
+      self->fontFamilyScopes[self->fontFamilyScopeCount - 1].pathDepth == self->cssPath.depth()) {
+    self->fontFamilyScopeCount--;
   }
 
   if (self->whitespaceScopeCount > 0 &&
@@ -3268,6 +3374,11 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
   // Leaving bold tag
   if (self->boldUntilDepth == self->depth) {
     self->boldUntilDepth = INT_MAX;
+  }
+
+  // Leaving heading: the block opened after it hyphenates again
+  if (self->headingDepth == self->depth) {
+    self->headingDepth = INT_MAX;
   }
 
   // Leaving italic tag

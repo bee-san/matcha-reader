@@ -6,15 +6,11 @@
 
 #include <atomic>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
-#include "../../BookmarkEntry.h"
-#include "EndOfBookOptions.h"
 #include "EpubReaderMenuActivity.h"
-#include "ReaderSessionReporter.h"
-#include "activities/Activity.h"
+#include "PagedReaderActivity.h"
 #include "util/ButtonNavigator.h"
 
 class WordSelectionScan;
@@ -23,76 +19,60 @@ namespace PixelCacheIO {
 class Reader;
 }
 
-class MangaReaderActivity final : public Activity {
+class MangaReaderActivity final : public PagedReaderActivity {
  public:
   explicit MangaReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string bookPath)
-      : Activity("MangaReader", renderer, mappedInput), pendingBookPath(std::move(bookPath)) {}
+      : PagedReaderActivity("MangaReader", renderer, mappedInput, std::move(bookPath),
+                            /*allowFastInitialRefresh=*/false) {}
 
-  void onEnter() override;
-  void onExit() override;
-  void prepareForSleep() override;
-  void loop() override;
   void render(RenderLock&&) override;
-  bool isReaderActivity() const override { return true; }
-  ScreenshotInfo getScreenshotInfo() const override;
+
+ protected:
+  bool loadBook() override;
+  bool hasBook() const override { return book != nullptr; }
+  std::string getBookTitle() const override { return book ? book->getTitle() : std::string(); }
+  std::string getBookAuthor() const override;
+  std::string getBookThumbBmpPath() const override { return book ? book->getThumbBmpPath() : std::string(); }
+  const char* getBookLanguage() const override { return book ? book->getLanguage().c_str() : nullptr; }
+  void onReaderEnter() override;
+  void onReaderExit() override;
+  void readerLoop() override;
+  // Manga renders no book text, so the reader font is not loaded for it.
+  bool usesReaderFonts() const override { return false; }
+  // A manga book is a folder, so its document id comes from the panel index inside it: one file
+  // per book, written once at conversion.
+  std::string sessionDocumentPath() const override { return bookPath + "/panels.idx"; }
+  // Whole-book progress in basis points; the end screen is 100%.
+  int getProgressBasisPoints() const override;
+  // Pages, not text: the reading speed takes no samples from them.
+  bool hasTextProgress() const override { return false; }
 
  private:
-  std::string pendingBookPath;
   std::unique_ptr<manga::MangaBook> book;
-  std::unique_ptr<EndOfBookOptions> endOfBookOptions;
-  std::atomic<bool> endOfBookOptionsReady{false};
-  // Translation opens as a panel over the page once render() has put the page back after the
-  // menu: the menu handler stores the text and sets the flag, render() marks the page drawn.
-  std::atomic<bool> translationAfterRender{false};
-  std::atomic<bool> translationPageReady{false};
+  // A panel chosen in the reader menu (translation, word lookup) opens over the page only once
+  // render() has put the page back: the menu handler sets panelAfterRender, render() marks the
+  // page drawn, loop() opens the panel.
+  enum class MenuPanel : uint8_t { None, Translation, WordLookup };
+  std::atomic<MenuPanel> panelAfterRender{MenuPanel::None};
+  std::atomic<bool> panelPageReady{false};
+  void openPanelAfterRender(MenuPanel panel);
   std::string pendingTranslationSource;
   std::string pendingTranslation;
 
-  uint32_t currentPage = 0;
   int currentPanel = -1;  // -1 = full page view, 0+ = zoomed panel
-  int pagesUntilFullRefresh = 0;
 
   std::vector<manga::Panel> panels;
   bool panelsLoaded = false;
 
-  bool pendingScreenshot = false;
-  bool ignoreNextConfirmRelease = false;
-  unsigned long readingSessionStartMs = 0;
-  int enterPercent = -1;  // the book's saved progress when it was opened
-  bool syncedPositionOffered = false;
-  void jumpToPercent(int percent);
-  // Page the last explicit jump (chapter, percent, bookmark) started from. Jump Back returns
-  // there and records the page it leaves, so a second Jump Back undoes it.
-  std::optional<uint32_t> jumpOriginPage;
-  void jumpToPage(uint32_t page);
-  // Kept in jump.bin across sleep and reopening, consumed on load.
-  void saveJumpOrigin() const;
-  void loadJumpOrigin();
-  // Writes the position an Insights sync fetched from another device as this book's saved page and drops
-  // it (syncedPosition). False when there is none.
-  bool writeSyncedPosition();
-  int syncedPositionPercent();
-
   bool automaticPageTurnActive = false;
   unsigned long lastPageTurnTime = 0;
   unsigned long pageTurnDuration = 0;
-
-  bool currentPageBookmarked = false;
-  bool showBookmarkMessage = false;
-  bool bookmarkRemoved = false;  // true when last toggle removed (controls popup text)
-  unsigned long bookmarkMessageTime = 0UL;
-  std::vector<BookmarkEntry> cachedBookmarks;
 
   ButtonNavigator buttonNavigator;
 
   enum class ViewMode { FullPage, PanelZoom };
   ViewMode viewMode = ViewMode::FullPage;
 
-  // Reading-session plugin events, reported the way the other readers report them.
-  ReaderSessionReporter sessionReporter_;
-  // Whole-book progress in basis points; the end screen is 100%.
-  int progressBasisPoints() const;
-  void flushReaderSession();
   // Per-book preference persisted as progress.bin byte 7. Books that physically omit page images
   // still enter their crops regardless of this preference.
   bool panelsOnlyMode = false;
@@ -404,27 +384,27 @@ class MangaReaderActivity final : public Activity {
 
   void nextPanel();
   void prevPanel();
+  static constexpr uint32_t SKIP_PAGE_COUNT = 10;  // pages a held turn skips
   void nextPage(bool keepPanelMode = false);
   void prevPage(bool keepPanelMode = false);
   int findPanelWithCrop(int start, int step) const;
-  bool isAtEndOfBook() const;
-  void clearEndOfBookOptionsIfNeeded();
-  bool handleEndOfBookMenu();
-  bool handleEndOfBookPageTurn(bool prevTriggered, bool nextTriggered);
-  void onReturnFromEndOfBook();
-  bool renderEndOfBook();
+  void onReturnFromEndOfBook() override;
+  bool renderMangaEndOfBook();
 
-  void saveProgress() const;
-  void loadProgress();
-
-  void loadCachedBookmarks();
-  void updateBookmarkFlag();
-  void addBookmark();
+  void saveProgress() const override;
+  void loadProgress() override;
+  uint32_t pageCount() const override { return book ? book->getPageCount() : 0; }
+  // Bookmarks, the synced position and the saved page are keyed by the book folder.
+  std::string positionKey() const override { return book ? book->getFolder() : bookPath; }
+  void goToPage(uint32_t page) override;
+  std::string bookmarkSummary() const override;
+  std::vector<manga::TocEntry> chapters() const override {
+    return book ? book->getToc() : std::vector<manga::TocEntry>{};
+  }
+  void fillSyncBook(PagedSyncBook& paged) const override;
 
   void launchWordLookupCurrentView();
-  void launchMenu();
+  void launchMenu() override;
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
-  bool launchSync(bool withClockAndInsights);
-  bool startShortcutSync() override;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
 };

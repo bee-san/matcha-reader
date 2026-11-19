@@ -20,6 +20,7 @@
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
 #include "components/HeaderBackTapTarget.h"
+#include "flashcards/FlashcardsActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -159,6 +160,15 @@ void ActivityManager::loop() {
       haptic_feedback::touchAction();
       pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
       return;
+    }
+
+    // The EEGO A4's fast waveform ghosts and menus never ask for anything else, so their screens
+    // get a cleaning HALF pass at the reader's Refresh Frequency. The reader keeps its own count.
+    {
+      const int every = SETTINGS.refreshFrequency == CrossPointSettings::REFRESH_NEVER
+                            ? 0
+                            : std::min(SETTINGS.getRefreshFrequency(), 255);
+      renderer.setFastRefreshCleanup(BoardConfig::isEegoA4() && !isReaderActivity() ? static_cast<uint8_t>(every) : 0);
     }
 
     // Note: do not hold a lock here, the loop() method must be responsible for acquire one if needed.
@@ -306,6 +316,7 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   pendingReaderPath.clear();
   // Note: no lock here, this is usually called by loop() and we may run into deadlock
   if (currentActivity) {
+    noteReaderResidue(*newActivity);
     // Defer launch if we're currently in an activity, to avoid deleting the current activity
     // leading to the "delete this" problem
     pendingActivity = std::move(newActivity);
@@ -317,10 +328,29 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   }
 }
 
+void ActivityManager::noteReaderResidue(const Activity& next) {
+  // Menu screens refresh FAST, which cannot clear a reader page (see goHome). Home scrubs itself,
+  // but a key press drops that pass, so the first other screen after a book takes it instead,
+  // unless a HALF/FULL pass already ran. Sleep and readers pick their own waveform.
+  readerResidueOwed = readerResidueOwed || currentActivity->isReaderActivity();
+  if (!readerResidueOwed || next.name == "Home" || next.name == "Sleep") return;
+  if (!next.isReaderActivity() && renderer.panelHasResidue()) renderer.promoteNextRefresh(HalDisplay::HALF_REFRESH);
+  readerResidueOwed = false;
+}
+
 void ActivityManager::goToFileTransfer() {
   auto activity = makeUniqueNoThrow<CrossPointWebServerActivity>(renderer, mappedInput);
   if (!activity) {
     LOG_ERR("ACT", "Not enough memory to open File Transfer");
+    return;
+  }
+  replaceActivity(std::move(activity));
+}
+
+void ActivityManager::goToFlashcards() {
+  auto activity = makeUniqueNoThrow<FlashcardsActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: flashcards activity");
     return;
   }
   replaceActivity(std::move(activity));
@@ -404,8 +434,8 @@ void ActivityManager::goToOpdsServers() {
   replaceActivity(std::move(activity));
 }
 
-void ActivityManager::goToPlugins(bool showOpds) {
-  auto activity = makeUniqueNoThrow<PluginCatalogActivity>(renderer, mappedInput, showOpds, /*rootMode=*/true);
+void ActivityManager::goToPlugins() {
+  auto activity = makeUniqueNoThrow<PluginCatalogActivity>(renderer, mappedInput, /*rootMode=*/true);
   if (!activity) {
     LOG_ERR("ACT", "OOM: plugin catalog activity");
     return;
@@ -463,7 +493,9 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
       initialMenuItem = HomeMenuItem::FILE_BROWSER;
     } else if (activityName == "Library") {
       initialMenuItem = HomeMenuItem::LIBRARY;
-    } else if (activityName == "OpdsBookBrowser" || activityName == "PluginCatalog") {
+    } else if (activityName == "PluginCatalog") {
+      initialMenuItem = HomeMenuItem::PLUGINS;
+    } else if (activityName == "OpdsBookBrowser") {
       initialMenuItem = HomeMenuItem::OPDS_BROWSER;
     } else if (activityName == "CrossPointWebServer") {
       initialMenuItem = HomeMenuItem::FILE_TRANSFER;
@@ -471,6 +503,8 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
       initialMenuItem = HomeMenuItem::SETTINGS_MENU;
     }
   }
+  // Leaving a reader cleans on every board (upstream does so on the EEGO A4 alone: its gray page
+  // ghosts in Home's dithered areas after a fast refresh).
   replaceActivity(
       std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, cleanInitialRefresh || leftReaderFrame));
 }

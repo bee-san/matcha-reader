@@ -44,9 +44,9 @@ bool refresh();
 // True while the window is open; brightness and warmth edits then change the night levels.
 bool nightActive();
 
-// Stores levels picked on the frontlight panel as the night or the daytime pair, whichever the
-// light is showing. Does not save.
-void saveLevels(uint8_t brightness, uint8_t warmth);
+// Stores levels picked on the frontlight panel as the night pair when `night`, else as the daytime
+// pair. Does not save.
+void saveLevels(uint8_t brightness, uint8_t warmth, bool night);
 
 // Value text for the Light Schedule row: "Off", "20:00–06:00", or tonight's sunset and sunrise.
 void formatSummary(char* buf, size_t size);

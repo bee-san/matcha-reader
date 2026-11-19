@@ -95,6 +95,35 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 115 (fork numbering)
+
+The binary layout is unchanged and completed and partial sections are rebuilt. IPA letters, the
+bullet operator (∙) and stars (★ ☆) that no reader font has are drawn from a built-in symbol face
+instead of a replacement glyph, which changes their width. Book metadata and saved progress are
+kept.
+
+### Version 114 (fork numbering)
+
+Upstream's version 75, merged. The binary layout is unchanged and completed and partial sections
+are rebuilt. Headings are no longer hyphenated, so a heading that broke inside a word now wraps
+whole. Book metadata and saved progress are kept.
+
+### Version 113 (fork numbering)
+
+Upstream's version 74, merged. The binary layout is unchanged and completed and partial sections
+are rebuilt. Runtime TrueType advances no longer round up before the final pixel snap, which can
+change cached line breaks and word positions. Bitmap fonts and `.cpfont` files are unchanged.
+Book metadata and saved progress are kept.
+
+### Version 112 (fork numbering)
+
+The header gains a `u32` after the word spacing: the signature of the publisher fonts (`@font-face`)
+the book was laid out with, 0 for none. A section built with other fonts, or with them turned off, is
+rebuilt. CSS cache version 29 adds the `font-family` key to each rule record (two bytes after the
+per-side borders, defined bit 30), and the book's `@font-face` rules are saved beside it in
+`css_fonts.cache`: a version byte, a count, then per face its family key (`u16`), a flags byte (1 bold,
+2 italic) and its font path in the EPUB (`u16` length and the bytes).
+
 ### Version 111 (fork numbering)
 
 Upstream merge (their versions 72 and 73). The layout format is unchanged. Ruby layout now
@@ -586,6 +615,24 @@ if (parsedSize != fileSize) {
 One file per spine item laid out as vertical text. Unlike `section.bin` it is documented here by
 its trailer only; the page records are written and read by `VerticalSection.cpp`.
 
+### Version 161
+
+No format change. A column that starts with an opening bracket and is squeezed to pull one more
+character in keeps the characters after the bracket clear of it. Cached chapters are laid out again.
+
+### Version 160
+
+The header gains a `u32` after the right margin: the publisher-font signature, as in `section.bin`
+version 112. Each glyph record gains a `u8` after its size: the publisher font it is drawn in (0 = the
+reader font, 1 or 2 = one of the book's families).
+
+### Version 159
+
+Each glyph record gains a `u8` after its line-head flag: the CSS `font-size` the character is set at,
+in eighths of the body size (8 = as is), snapped as horizontal text snaps it. A character advances
+down its column by its own size, and a column is as wide as the largest text in it. v158 caches are
+rebuilt once.
+
 ### Versions 144 to 158
 
 No format change; each rebuilds the cached pages once for a layout fix. In 148, a chapter applies
@@ -736,6 +783,7 @@ fold bump rebuilds ranks while preserving `firstSeen`.
 Fold version 4 preserves leading articles in title sort and search keys.
 Fold version 5 adds manga: a `.matcha` file, and a folder holding `panels.idx`, which is one
 book keyed by that file's size and time and titled by the folder name.
+Fold version 6 drops all Unicode 18.0 Hebrew combining marks, including U+05C8 and U+05C9.
 
 Sections are 512-byte aligned so each starts on an SD block boundary.
 

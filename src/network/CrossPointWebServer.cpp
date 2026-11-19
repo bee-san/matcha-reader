@@ -37,19 +37,23 @@
 #include <cstring>
 #include <string_view>
 
+#include "BookStats.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
 #include "OpdsServerStore.h"
 #include "ProtectedPaths.h"
+#include "ReadingStatsStore.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
 #include "WifiCredentialStore.h"
 #include "WifiPowerSaveGuard.h"
+#include "components/UITheme.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
+#include "html/InsightsPageHtml.generated.h"
 #include "html/PluginsPageHtml.generated.h"
 #include "html/RunnerPageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
@@ -59,7 +63,9 @@
 #include "html/js/epub_optimizerJs.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "html/js/plugin_hostJs.generated.h"
+#include "stats/StatsEditor.h"
 #include "util/BookCacheUtils.h"
+#include "util/BookInsights.h"
 #include "util/DeleteUtils.h"
 #include "util/DictionaryRegistry.h"
 #include "util/FirmwareIdentity.h"
@@ -374,6 +380,11 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/settings", HTTP_GET, [](S& s) { s.handleSettingsPage(); }, nullptr},
         {"/api/settings", HTTP_GET, [](S& s) { s.handleGetSettings(); }, nullptr},
         {"/api/settings", HTTP_POST, [](S& s) { s.handlePostSettings(); }, nullptr},
+
+        {"/insights", HTTP_GET, [](S& s) { s.handleInsightsPage(); }, nullptr},
+        {"/api/insights/books", HTTP_GET, [](S& s) { s.handleGetStatsBooks(); }, nullptr},
+        {"/api/insights/book", HTTP_GET, [](S& s) { s.handleGetStatsBook(); }, nullptr},
+        {"/api/insights/day", HTTP_POST, [](S& s) { s.handlePostStatsDay(); }, nullptr},
 
         {"/fonts", HTTP_GET, [](S& s) { s.handleFontsPage(); }, nullptr},
         {"/api/fonts", HTTP_GET, [](S& s) { s.handleFontList(); }, nullptr},
@@ -707,6 +718,7 @@ void CrossPointWebServer::answerDiscovery() const {
   if (strcmp(buffer, "hello") != 0) return;
   const char* hostname = WiFi.getHostname();
   char message[96];
+  // "crosspoint" is the discovery token the Calibre plugin matches, not the device's name; keep it.
   const int messageLen = snprintf(message, sizeof(message), "crosspoint (on %s);%u",
                                   hostname && hostname[0] ? hostname : "crosspoint", static_cast<unsigned>(wsPort));
   if (messageLen <= 0) return;
@@ -848,6 +860,20 @@ void CrossPointWebServer::handleStatus() const {
 #else
   doc["device"] = BoardConfig::ACTIVE.name;
 #endif
+  {
+    // Portrait reading area, for the upload page's image optimizer: the panel minus the bezel
+    // insets, the reader's screen margin, and at the bottom the status bar when it is taller
+    // (EpubReaderActivity::readerBottomReserve, horizontal text).
+    const auto& board = BoardConfig::ACTIVE;
+    const auto& inset = board.viewableInsets;
+    const int margin = SETTINGS.screenMargin;
+    const int portraitW = std::min(board.displayWidth, board.displayHeight);
+    const int portraitH = std::max(board.displayWidth, board.displayHeight);
+    JsonObject viewport = doc["viewport"].to<JsonObject>();
+    viewport["width"] = portraitW - inset.left - inset.right - 2 * margin;
+    const int bottom = std::max(margin, static_cast<int>(UITheme::getInstance().getStatusBarHeight()));
+    viewport["height"] = portraitH - inset.top - inset.bottom - margin - bottom;
+  }
 
   char snBuf[33] = {0};
   bool valid = false;
@@ -1291,11 +1317,11 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
         LOG_DBG("WEB", "[UPLOAD] Diagnostics: %d writes, total write time: %lu ms (%.1f%%)", writeCount, totalWriteTime,
                 writePercent);
 
-        // Clear epub cache after uploading the file
+        // Drop what was built from an older copy of the file; the reading position stays.
         String filePath = state.path;
         if (!filePath.endsWith("/")) filePath += "/";
         filePath += state.fileName;
-        clearBookCache(filePath.c_str());
+        clearBookContentCache(filePath.c_str());
         if (library::isLibraryBookFile(filePath.c_str())) library::markLibraryIndexDirty();
       }
       state.buffer.reset();
@@ -1571,6 +1597,7 @@ void CrossPointWebServer::handleMove() const {
   const bool success = ClippingStore::moveBook(itemPath.c_str(), newPath.c_str());
 
   if (success) {
+    bookinsights::followMove(itemPath.c_str(), newPath.c_str());
     LOG_DBG("WEB", "Moved file: %s -> %s", itemPath.c_str(), newPath.c_str());
     server->send(200, "text/plain", "Moved successfully");
   } else {
@@ -1675,6 +1702,127 @@ void CrossPointWebServer::handleDelete() const {
   }
 }
 
+namespace {
+// "YYYY-MM-DD" for a day counted from 1970-01-01 (Howard Hinnant's civil_from_days).
+void civilDate(const int32_t z0, char out[11]) {
+  const int32_t z = z0 + 719468;
+  const int32_t era = (z >= 0 ? z : z - 146096) / 146097;
+  const auto doe = static_cast<uint32_t>(z - era * 146097);
+  const uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const uint32_t mp = (5 * doy + 2) / 153;
+  const uint32_t d = doy - (153 * mp + 2) / 5 + 1;
+  const uint32_t m = mp < 10 ? mp + 3 : mp - 9;
+  const int32_t y = static_cast<int32_t>(yoe) + era * 400 + (m <= 2 ? 1 : 0);
+  snprintf(out, 11, "%04ld-%02lu-%02lu", static_cast<long>(y), static_cast<unsigned long>(m),
+           static_cast<unsigned long>(d));
+}
+// Days from 1970-01-01 to 2000-01-01: the sync markers count from 2000.
+constexpr int32_t DAYS_1970_TO_2000 = 10957;
+}  // namespace
+
+void CrossPointWebServer::handleInsightsPage() const {
+  sendStaticContent(server.get(), InsightsPageHtml, sizeof(InsightsPageHtml), InsightsPageHtmlETag, "text/html");
+}
+
+// The books with recorded time, and the last day the sync server has (days up to it cannot change).
+void CrossPointWebServer::handleGetStatsBooks() const {
+  ReadingStatsStore::Loaded stats;
+  if (!stats.loaded()) {
+    server->send(503, "text/plain", "Reading stats unavailable");
+    return;
+  }
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  ChunkedReply reply(*server);
+  JsonDocument doc;
+  const int32_t locked = statsEditor::lockedThroughDay();
+  char date[11];
+  reply.write("{\"lockedThrough\":");
+  if (locked > 0) {
+    civilDate(locked + DAYS_1970_TO_2000, date);
+    reply.write("\"");
+    reply.write(date);
+    reply.write("\"");
+  } else {
+    reply.write("null");
+  }
+  reply.write(",\"books\":[");
+  bool first = true;
+  for (const auto& b : READING_STATS_STORE.getBooks()) {
+    doc.clear();
+    doc["path"] = b.path;
+    doc["language"] = b.language;
+    doc["minutes"] = b.minutesRead;
+    doc["finished"] = READING_STATS_STORE.isFinished(b.path);
+    // lastReadDay counts from the store's own epoch, not 1970.
+    civilDate(b.lastReadDay - ReadingStatsStore::dayNumber(1970, 1, 1), date);
+    doc["lastRead"] = date;
+    if (!first) reply.write(",");
+    first = false;
+    serializeJson(doc, reply);
+  }
+  reply.write("]}");
+  reply.end();
+}
+
+// One book's reading days.
+void CrossPointWebServer::handleGetStatsBook() const {
+  const String path = server->arg("path");
+  BookStats book;
+  if (path.isEmpty() || !book.load(path.c_str())) {
+    server->send(404, "text/plain", "No stats for this book");
+    return;
+  }
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  ChunkedReply reply(*server);
+  char line[64];
+  snprintf(line, sizeof(line), "{\"sessions\":%lu,\"days\":[", static_cast<unsigned long>(book.getSessions()));
+  reply.write(line);
+  bool first = true;
+  for (const auto& d : book.getDays()) {
+    snprintf(line, sizeof(line), "%s{\"date\":\"%04u-%02u-%02u\",\"minutes\":%u}", first ? "" : ",", d.year, d.month,
+             d.day, d.minutes);
+    reply.write(line);
+    first = false;
+  }
+  reply.write("]}");
+  reply.end();
+}
+
+// {"path", "date": "YYYY-MM-DD", "minutes"}: sets one book's minutes on one day.
+void CrossPointWebServer::handlePostStatsDay() const {
+  JsonDocument doc;
+  if (!server->hasArg("plain") || deserializeJson(doc, server->arg("plain"))) {
+    server->send(400, "text/plain", "Invalid JSON");
+    return;
+  }
+  const char* path = doc["path"] | "";
+  const char* date = doc["date"] | "";
+  const int minutes = doc["minutes"] | -1;
+  unsigned y = 0, m = 0, d = 0;
+  if (!*path || sscanf(date, "%4u-%2u-%2u", &y, &m, &d) != 3 || minutes < 0 || minutes > 1440) {
+    server->send(400, "text/plain", "Need path, date and 0-1440 minutes");
+    return;
+  }
+  switch (statsEditor::setBookDay(path, static_cast<uint16_t>(y), static_cast<uint8_t>(m), static_cast<uint8_t>(d),
+                                  static_cast<uint16_t>(minutes))) {
+    case statsEditor::Result::Ok:
+      server->send(200, "text/plain", "OK");
+      return;
+    case statsEditor::Result::Locked:
+      server->send(409, "text/plain", "That day is already synced");
+      return;
+    case statsEditor::Result::BadDate:
+      server->send(400, "text/plain", "Invalid date");
+      return;
+    case statsEditor::Result::Failed:
+      server->send(500, "text/plain", "Could not save");
+      return;
+  }
+}
+
 void CrossPointWebServer::handleSettingsPage() const {
   sendStaticContent(server.get(), SettingsPageHtml, sizeof(SettingsPageHtml), SettingsPageHtmlETag, "text/html");
   LOG_DBG("WEB", "Served settings page");
@@ -1698,12 +1846,10 @@ void CrossPointWebServer::handleGetSettings() const {
   bool seenFirst = false;
   JsonDocument doc;
 
-  // The fork builds the whole list (its settings stay header-only); entries are still serialized
-  // and sent one at a time.
-  const auto settings = getSettingsList(&sdFontSystem.registry(), &dictionaries);
-  for (const SettingInfo& s : settings) {
-    if (!wants(s.key)) continue;
-    if (s.webHidden) continue;
+  // One entry at a time: building the whole list first can exhaust the heap
+  // right after a plugin relay.
+  forEachSetting(&sdFontSystem.registry(), &dictionaries, wants, [&](const SettingInfo& s) {
+    if (s.webHidden) return;
 
     doc.clear();
     doc["key"] = s.key;
@@ -1770,20 +1916,20 @@ void CrossPointWebServer::handleGetSettings() const {
         break;
       }
       default:
-        continue;
+        return;
     }
 
     // A truncated options list would shift option indexes, so skip the entry instead.
     if (doc.overflowed()) {
       LOG_ERR("WEB", "OOM: setting JSON for %s", s.key);
-      continue;
+      return;
     }
     if (seenFirst) reply.write(',');
     seenFirst = true;
     serializeJson(doc, reply);
     yield();                          // Yield to allow WiFi and other tasks to process during a slow send
     resetTaskWatchdogIfSubscribed();  // Reset watchdog: writing a full chunk blocks on the network
-  }
+  });
 
   reply.write("]");
   reply.end();
@@ -1883,6 +2029,7 @@ void CrossPointWebServer::handleGetOpdsServers() const {
   char output[512];
   constexpr size_t outputSize = sizeof(output);
   JsonDocument doc;
+  bool seenFirst = false;  // an oversize entry is skipped, so the index cannot place the commas
 
   for (size_t i = 0; i < servers.size(); i++) {
     doc.clear();
@@ -1903,7 +2050,8 @@ void CrossPointWebServer::handleGetOpdsServers() const {
     const size_t written = serializeJson(doc, output, outputSize);
     if (written >= outputSize) continue;
 
-    if (i > 0) server->sendContent(",");
+    if (seenFirst) server->sendContent(",");
+    seenFirst = true;
     server->sendContent(output);
     yield();                          // Yield to allow WiFi and other tasks to process during a slow send
     resetTaskWatchdogIfSubscribed();  // Reset watchdog: each sendContent() is a blocking network write
@@ -2615,8 +2763,8 @@ void CrossPointWebServer::handleFetch() {
     server->send(400, "application/json", "{\"error\":\"unsupported method\"}");
     return;
   }
-  // The body stays in DRAM, and goes out as one TLS record, while the session
-  // needs its heap: keep it small, and check it before copying.
+  // The body stays in DRAM while the session needs its heap: keep it small, and
+  // check it before copying.
   static constexpr size_t FETCH_MAX_REQUEST_BODY = 4 * 1024;
   const JsonVariantConst bodyField = req["body"];
   if (!bodyField.isNull() && !bodyField.is<const char*>()) {
@@ -3249,7 +3397,7 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
             wsLastCompleteSize = 0;
             wsLastCompleteAt = millis();
             LOG_DBG("WS", "Zero-byte upload complete: %s", filePath.c_str());
-            clearBookCache(filePath.c_str());
+            clearBookContentCache(filePath.c_str());
             if (library::isLibraryBookFile(filePath.c_str())) library::markLibraryIndexDirty();
             wsServer->sendTXT(num, "DONE");
             wsLastProgressSent = 0;
@@ -3315,11 +3463,11 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
         LOG_DBG("WS", "Upload complete: %s (%d bytes in %lu ms, %.1f KB/s)", wsUploadFileName.c_str(), wsUploadSize,
                 elapsed, kbps);
 
-        // Clear epub cache after uploading the file
+        // Drop what was built from an older copy of the file; the reading position stays.
         String filePath = wsUploadPath;
         if (!filePath.endsWith("/")) filePath += "/";
         filePath += wsUploadFileName;
-        clearBookCache(filePath.c_str());
+        clearBookContentCache(filePath.c_str());
         if (library::isLibraryBookFile(filePath.c_str())) library::markLibraryIndexDirty();
 
         wsServer->sendTXT(num, "DONE");

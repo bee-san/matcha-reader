@@ -5,6 +5,7 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <utility>
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -225,6 +226,9 @@ void UiListActivity::loop() {
   const auto swipe = mappedInput.wasSwipe();
   if (swipe == MappedInputManager::SwipeDir::Up || swipe == MappedInputManager::SwipeDir::Down) {
     auto& n = activeNav();
+    // The last build drew every row: nothing is off-screen to scroll to. The nav's own clamp uses
+    // its row-height estimate, which can be smaller than what a tall screen really fits.
+    if (n.inputPageRows() >= listCount()) return;
     const int delta = swipe == MappedInputManager::SwipeDir::Up ? n.inputPageRows() : -n.inputPageRows();
     LOG_DBG("LIST", "%s swipe delta=%d count=%d", name.c_str(), delta, listCount());
     n.requestScroll(delta);
@@ -241,7 +245,7 @@ TabRing::Focus UiListActivity::ringFocus() const {
 }
 
 void UiListActivity::ringSetFocus(const TabRing::Focus focus, const bool atEnd) {
-  tabFocus = focus == TabRing::Focus::BottomBar ? static_cast<int>(tabBarTab()) : -1;
+  tabFocus = focus == TabRing::Focus::BottomBar ? HomeTabBar::slotOf(tabBarTab()) : -1;
   topBandFocused = focus == TabRing::Focus::TopTabs;
   if (focus == TabRing::Focus::Content) {
     const int count = listCount();
@@ -305,6 +309,9 @@ void UiListActivity::syncListViewport(UiScreen& screen, fui::ListProps& props, c
   if (ringFocus() != TabRing::Focus::Content) props.selectedIndex = -1;
   // A touch board draws no row cursor until a button is pressed (see buttonCursorShown).
   if (!MappedInputManager::buttonCursorShown()) props.selectedIndex = -1;
+  // With no cursor drawn, the list cannot report the selection as drawn, and a pending follow
+  // would walk the viewport down until the selected row sat at the top.
+  if (props.selectedIndex < 0) n.followPending = false;
 }
 
 void UiListActivity::drawChrome() {
@@ -312,9 +319,11 @@ void UiListActivity::drawChrome() {
   if (!title) return;
   const auto& metrics = UITheme::getInstance().getMetrics();
   // The rule under the title only earns its place once there is content behind it: at the top of
-  // a list it is a second horizontal line stacked on the band below it.
+  // a list it is a second horizontal line stacked on the band below it. The cover theme draws no
+  // header rules at all.
+  const bool rule = !HomeTabBar::enabled() && activeNav().top > 0;
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight}, title, nullptr,
-                 HomeTabBar::showsBackButton(hasTabBar()), activeNav().top > 0 ? 1 : 0);
+                 HomeTabBar::showsBackButton(hasTabBar()), rule ? 1 : 0);
 }
 
 bool UiListActivity::hasTabBar() const { return tabBarTab() != HomeTab::Count && HomeTabBar::enabled(); }
@@ -340,9 +349,11 @@ void UiListActivity::drawFooter() {
     HomeTabBar::draw(renderer, tabBarTab(), tabFocus);
     return;
   }
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmHint(), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
+
+const char* UiListActivity::confirmHint() const { return tr(STR_SELECT); }
 
 void UiListActivity::render(RenderLock&&) {
   const uint32_t seen = activityManager.updateRequestCount();
@@ -371,5 +382,5 @@ void UiListActivity::render(RenderLock&&) {
   drawFooter();
   frameValid_ = true;
   renderedTabFocus_ = tabFocus;
-  renderer.displayBuffer();
+  renderer.displayBuffer(std::exchange(cleanNextRefresh, false) ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

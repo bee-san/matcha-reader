@@ -3,6 +3,8 @@
 #include <HalGPIO.h>
 
 #include "util/HomeButtonInput.h"
+#include "util/PowerButtonClickInput.h"
+#include "util/PowerButtonInput.h"
 #include "util/RemoteButtonInput.h"
 #include "util/SideButtonActions.h"
 
@@ -50,11 +52,40 @@ class MappedInputManager {
   // Touch boards draw a button cursor (list row, bottom bar slot) only while buttons are in use:
   // a button press shows it, a touch hides it again. Always true on boards without touch.
   static bool buttonCursorShown();
-#if FREEINK_CAP_TOUCH
-  // X4 Pro delays a single power click until its frontlight double-click window
-  // expires. The main loop supplies that one-frame event here.
-  void setPowerConfirmClickFrame(const bool clicked) { powerConfirmClickFrame = clicked; }
+  bool powerSleepClick() const { return powerSleepFrame; }
+  bool wasPowerSingleClick() const {
+    return powerSingleClickFrame || (wasReleased(Button::Power) && wasShortPowerReleased());
+  }
+  void resetPowerButtonInput() const {
+    powerButtonClickInput.reset();
+    powerSingleClickFrame = false;
+    powerSleepFrame = false;
+    deferredPowerSleepFrame = false;
+  }
+  // A power click bound to this SHORT_PWRBTN action fired this frame: a single or double click on
+  // the X4 Pro once its click window closes, a short release elsewhere (Down not also released).
+  bool wasPowerAction(uint8_t action) const;
+  bool isPowerHeld() const {
+#ifdef SIMULATOR
+    return gpio.isPressed(HalGPIO::BTN_POWER);
+#else
+    return gpio.isPressed(HalGPIO::BTN_POWER) || gpio.isPowerButtonPhysicallyPressed();
 #endif
+  }
+  void beginPowerInput(bool suppressHold, bool held) {
+    powerButtonInput.begin(suppressHold, held);
+    resetPowerButtonInput();
+  }
+  bool wasShortPowerReleased() const {
+    return gpio.wasReleased(HalGPIO::BTN_POWER) && powerButtonInput.wasShortReleased();
+  }
+  bool powerSleepRequested() const { return powerButtonInput.shouldSleep(); }
+  bool wasPowerReleaseConsumed() const { return powerButtonInput.wasReleaseConsumed(); }
+  void consumePowerGesture() const {
+    powerButtonInput.consume();
+    resetPowerButtonInput();
+  }
+  bool suppressPowerAfterRestart() const { return isPowerHeld() && powerButtonInput.suppressesHold(); }
   bool injectRemoteClick(RemoteButton button);
   bool hasRemoteClick() const { return remoteInput.button != RemoteButton::None; }
   bool wasPressed(Button button) const;
@@ -211,6 +242,12 @@ class MappedInputManager {
   bool sideRoleSuppressed(uint8_t physical) const;
   mutable RemoteButtonInput remoteInput;
   mutable HomeButtonInput homeButtonInput;
+  mutable PowerButtonInput powerButtonInput;
+  mutable PowerButtonClickInput powerButtonClickInput;
+  mutable bool powerSingleClickFrame = false;
+  mutable bool powerSleepFrame = false;
+  mutable bool deferredPowerSleepFrame = false;
+  mutable uint8_t powerClickAction = 0;  // SHORT_PWRBTN value classified this frame
   mutable HomeButtonAction homeAction = HomeButtonAction::Ignore;
   mutable HomeButtonAction deferredHomeAction = HomeButtonAction::Ignore;
   mutable bool touchHeldOverrideValid = false;
@@ -220,7 +257,4 @@ class MappedInputManager {
   // that remaps the logical buttons (orientation change), which a logical mask cannot.
   mutable uint16_t longPressFiredButtons = 0;
   mutable uint16_t suppressedReleaseButtons = 0;
-#if FREEINK_CAP_TOUCH
-  bool powerConfirmClickFrame = false;
-#endif
 };

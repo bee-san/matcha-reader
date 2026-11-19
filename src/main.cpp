@@ -32,6 +32,7 @@
 #include <cstdarg>
 #include <cstring>
 
+#include "AnkiSyncStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
@@ -46,6 +47,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/flashcards/AnkiSyncActivity.h"
 #include "activities/home/StatsSyncActivity.h"
 #include "activities/reader/EpubReaderTranslationActivity.h"
 #include "activities/settings/ClockSyncActivity.h"
@@ -79,16 +81,6 @@ FontDecompressor fontDecompressor;
 SdCardFontSystem sdFontSystem;
 FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts(), renderer.getTtfFonts());
 static unsigned long allowSleepAt = 0;
-static unsigned long lastX4ProPowerClickAt = 0;
-
-namespace {
-constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
-constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
-}  // namespace
-
-// A wake hold must never become an in-app power-button action.  Boot may continue
-// while the button is held; swallow the one release that ends that wake gesture.
-static bool wakePowerReleasePending = false;
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -121,6 +113,9 @@ EpdFont cjk8RegularFont(&notosansjp_joyo_8_regular);
 EpdFontFamily cjk8FontFamily(8, &cjk8RegularFont);
 EpdFont cjk12RegularFont(&notosansjp_joyo_12_regular);
 EpdFontFamily cjk12FontFamily(12, &cjk12RegularFont);
+// IPA and stars, for flashcard pronunciations and ratings that the reader fonts lack.
+EpdFont symbols14RegularFont(&symbols_14_regular);
+EpdFontFamily symbols14FontFamily(14, &symbols14RegularFont);
 
 EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
@@ -148,15 +143,20 @@ constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 3;
 constexpr uint32_t SILENT_REBOOT_TARGET_TAB = 4;
 // File Transfer > Join Network, entered through a reboot for a fresh heap (upstream's 3).
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 5;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;  // bounds the setup() range check
+// Between the two services of a flashcard sync; see silentRestartToFlashcardSync().
+constexpr uint32_t SILENT_REBOOT_TARGET_FLASHCARD_SYNC = 6;
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_FLASHCARD_SYNC;  // bounds the setup() range check
 // Bit in silentRebootPayload, which is a separate word from the target above -- the two
 // never share bits.
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
-// Tab destination for SILENT_REBOOT_TARGET_TAB: a HomeTab value, or a LibraryTabs value plus
-// SILENT_REBOOT_LIBRARY_TAB_BASE.
+// A power hold already consumed before the restart (see MappedInputManager::suppressPowerAfterRestart).
+constexpr uint32_t SILENT_REBOOT_SUPPRESS_POWER = 1U << 1;
+// Tab destination for SILENT_REBOOT_TARGET_TAB: a HomeTab value, a LibraryTabs value plus
+// SILENT_REBOOT_LIBRARY_TAB_BASE, or SILENT_REBOOT_OPDS_SERVERS.
 constexpr uint32_t SILENT_REBOOT_TAB_SHIFT = 8;
 constexpr uint32_t SILENT_REBOOT_TAB_MASK = 0xFFU << SILENT_REBOOT_TAB_SHIFT;
 constexpr uint32_t SILENT_REBOOT_LIBRARY_TAB_BASE = 16;
+constexpr uint32_t SILENT_REBOOT_OPDS_SERVERS = 64;
 
 // How the device is coming back to life, resolved once at boot. Both resume
 // flows suppress the splash and leave the panel holding its pre-boot frame; a
@@ -174,6 +174,22 @@ enum class BootResume : uint8_t {
 // device back up against the user's sleep gesture. Never cleared:
 // startDeepSleep() does not return, so a set latch only ends at the wakeup reset.
 static bool deepSleepInProgress = false;
+static unsigned long lastInputTime = 0;
+
+// Screens that block auto-sleep can hold one static image for as long as they
+// run. Once input stops, power the panel down as sleep does; the next paint wakes it.
+// The EEGO A4 does this on every screen, as its stock firmware does: its panel
+// fuzzes and shows earlier screens when left powered. Its driver times the
+// power-off itself, 500 ms after the last refresh, whatever the input does.
+static void idleDisplayWhileAwake() {
+  constexpr unsigned long kIdleAfterMs = 30000;
+  // The EEGO A4 idles its controller whenever the render lock is free (upstream #4494).
+  if (!BoardConfig::isEegoA4() && (!activityManager.preventAutoSleep() || millis() - lastInputTime < kIdleAfterMs)) {
+    return;
+  }
+  RenderLock lock{RenderLock::Try{}};
+  if (lock.held()) display.controllerIdle();
+}
 
 // False on boards that end a Wi-Fi session in place instead of rebooting (silentRestartTo).
 static bool wifiSessionEndsInRestart() {
@@ -209,6 +225,7 @@ static bool finishWifiSessionWithoutRestart() {
 static void armSilentReboot(const uint32_t target) {
   silentRebootTarget = target;
   silentRebootPayload = Frontlight.isOn() ? SILENT_REBOOT_LIGHT_ON : 0;
+  if (mappedInputManager.suppressPowerAfterRestart()) silentRebootPayload |= SILENT_REBOOT_SUPPRESS_POWER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
 }
 
@@ -259,6 +276,14 @@ void silentRestartToJoinNetwork() {
   ESP.restart();
 }
 
+bool silentRestartAvailable() { return !deepSleepInProgress && wifiSessionEndsInRestart(); }
+
+void silentRestartToFlashcardSync() {
+  // First: on a touch board silentRestartTo() would end the Wi-Fi session in place instead.
+  if (!silentRestartAvailable()) return;
+  silentRestartTo(SILENT_REBOOT_TARGET_FLASHCARD_SYNC, "flashcard-sync");
+}
+
 void silentRestartToHomeTab(const int homeTab) {
   silentRestartTo(SILENT_REBOOT_TARGET_TAB, "tab", static_cast<uint32_t>(homeTab));
 }
@@ -268,10 +293,13 @@ void silentRestartToLibraryTab(const int libraryTab) {
                   SILENT_REBOOT_LIBRARY_TAB_BASE + static_cast<uint32_t>(libraryTab));
 }
 
+void silentRestartToOpdsServers() {
+  silentRestartTo(SILENT_REBOOT_TARGET_TAB, "opds servers", SILENT_REBOOT_OPDS_SERVERS);
+}
+
 void silentRestartToTranslation() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
-  silentRebootTarget = SILENT_REBOOT_TARGET_TRANSLATE;
-  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  armSilentReboot(SILENT_REBOOT_TARGET_TRANSLATE);
   LOG_DBG("MAIN", "Silent restart (target=translate)");
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
@@ -330,27 +358,6 @@ void handleSlideSwitch() {
   SETTINGS.saveToFile();
   activityManager.requestUpdate();
   LOG_INF("SWITCH", "Slide switch %s", on ? "on" : "off");
-}
-
-bool handleX4ProFrontlightDoubleClick() {
-  if (!BoardConfig::isX4Pro() || !SETTINGS.doubleClickPwrLight || !gpio.wasReleased(HalGPIO::BTN_POWER)) {
-    return false;
-  }
-
-  const unsigned long now = millis();
-  if (gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS) {
-    lastX4ProPowerClickAt = 0;
-    return false;
-  }
-
-  if (lastX4ProPowerClickAt == 0 || now - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-    lastX4ProPowerClickAt = now;
-    return false;
-  }
-
-  lastX4ProPowerClickAt = 0;
-  toggleFrontlight();
-  return true;
 }
 
 void waitForPowerRelease() {
@@ -526,7 +533,9 @@ static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
   char text[48];
   snprintf(text, sizeof(text), "%s  %u%%", charging ? tr(STR_CHARGING) : tr(STR_CHARGED), percent);
   renderer.drawCenteredText(SMALL_FONT_ID, y + 6, text);
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  if (!renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h)) {
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
 }
 
 // Shows the charge strip while the power HAL holds sleep on USB power, and
@@ -540,14 +549,16 @@ static bool holdSleepWhileUsbPowered() {
   auto* const sleepFrame = static_cast<uint8_t*>(heap_caps_malloc(frameSize, MALLOC_CAP_SPIRAM));
   if (sleepFrame) memcpy(sleepFrame, renderer.getFrameBuffer(), frameSize);
   const bool buttonPressed = powerManager.holdWhileUsbPowered(gpio, drawSleepChargeStrip);
-  if (sleepFrame) {
-    if (!buttonPressed) {
-      RenderLock lock;
-      memcpy(renderer.getFrameBuffer(), sleepFrame, frameSize);
+  if (!buttonPressed) {
+    RenderLock lock;
+    if (sleepFrame) memcpy(renderer.getFrameBuffer(), sleepFrame, frameSize);
+    const int h = renderer.getLineHeight(SMALL_FONT_ID) + 12;
+    const int y = renderer.getScreenHeight() - h;
+    if (!renderer.displayRetainedGrayscaleOverlay(0, y, renderer.getScreenWidth(), h, true) && sleepFrame) {
       renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     }
-    heap_caps_free(sleepFrame);
   }
+  heap_caps_free(sleepFrame);
   return buttonPressed;
 }
 #endif
@@ -667,6 +678,7 @@ void setupDisplayAndFonts(bool seamless = false) {
   // symbols that are in the built-in CJK font but not in the .cpfont file.
   EpdFontFamily::setGlobalFallback(&cjk12FontFamily);
   EpdFontFamily::setBuiltinFallback(&cjk12FontFamily);
+  EpdFontFamily::setSymbolFallback(&symbols14FontFamily);
 
   // Discover and load SD card fonts
   sdFontSystem.begin(renderer);
@@ -702,6 +714,7 @@ void setup() {
   const bool silentRebootLightOn = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_LIGHT_ON) != 0;
   const uint32_t silentRebootTab =
       isSilentReboot ? (silentRebootPayload & SILENT_REBOOT_TAB_MASK) >> SILENT_REBOOT_TAB_SHIFT : 0;
+  const bool suppressRestartPower = isSilentReboot && (silentRebootPayload & SILENT_REBOOT_SUPPRESS_POWER) != 0;
   silentRebootMagic = 0;
   silentRebootTarget = 0;
   silentRebootPayload = 0;
@@ -729,6 +742,15 @@ void setup() {
   // the button is released: a hold check there would power it straight back off.
   const bool wakeHoldVerified = wakeupReason != HalGPIO::WakeupReason::PowerButton || BoardConfig::isMetalioEInk4() ||
                                 gpio.verifyPowerButtonWakeup();
+  // EEGO A4: a power-button wake needs the button held until 400 ms after boot
+  // unless a click is set to wake. Sampled here, at the deadline; the decision
+  // waits for SETTINGS like the one above. A released button ends the wait.
+  constexpr unsigned long EEGO_WAKE_HOLD_MS = 400;
+  bool eegoWakeHeld = true;
+  if (BoardConfig::isEegoA4() && wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    while (millis() < EEGO_WAKE_HOLD_MS && gpio.isPowerButtonPhysicallyPressed()) delay(5);
+    eegoWakeHeld = gpio.isPowerButtonPhysicallyPressed();
+  }
 
   // X4 Pro and X4 Classic both map BTN_UP to GPIO0 — an ESP32-S3 boot strap — so
   // gate recovery on the non-strap Down key (GPIO7) to avoid a stuck-in-recovery loop.
@@ -794,6 +816,7 @@ void setup() {
   // from there. A missing or stale pack leaves the UI in English rather than failing the boot.
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
+  ankisync::loadSyncStores();
   OPDS_STORE.loadFromFile();
   OPDS_TOKENS.loadFromFile();
   LCP_PASSPHRASES.loadFromFile();
@@ -817,37 +840,22 @@ void setup() {
   trustedtime::init();
   bleturner::begin(pageturner::host, SETTINGS.ble);
 
-  // Brightness and warmth are always restored. A normal wake starts with the
-  // light off unless Restore Light on Wake is enabled; silent maintenance
-  // reboots replay the live state captured at restart, so they neither go dark
-  // nor light up against the user's wake preference. A slide switch bound to
-  // the light decides it from its position instead.
-  const bool restoreLightOn = isSilentReboot ? silentRebootLightOn
-                              : slideSwitchOwnsLight()
-                                  ? gpio.isToggleSwitchOn()
-                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
-  // With Short Power Button Press = Sleep, a single click wakes on any
-  // device; otherwise the button must still be held (ghost-wake debounce).
-  // Picco: plugging in USB pulses the wake line; power on, as stock does.
-  const bool ghostWake = wakeupReason == HalGPIO::WakeupReason::PowerButton && !wakeHoldVerified &&
-                         SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
-                         !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected());
-  uint8_t lightBrightness = SETTINGS.frontlightBrightness;
-  uint8_t lightWarmth = SETTINGS.frontlightWarmth;
-  bool lightOn = restoreLightOn;
-  // The night light schedule may have opened or closed its window while the device slept. A
-  // ghost wake goes straight back to sleep and must not use that up.
-  if (!ghostWake) nightlight::adjustBootState(lightBrightness, lightWarmth, lightOn);
-  Frontlight.begin(lightBrightness, lightWarmth, lightOn);
-
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
-      if (ghostWake) {
+      // With Short Power Button Press = Sleep, a single click wakes on any
+      // device; otherwise the button must still be held (ghost-wake debounce).
+      // Picco: plugging in USB pulses the wake line; power on, as stock does.
+      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+          !(FREEINK_DEVICE_PICCO && gpio.isUsbConnected())) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         Storage.prepareForDeepSleep();
         powerManager.startDeepSleep(gpio);
       }
-      wakePowerReleasePending = true;
+      if (!eegoWakeHeld && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
+        LOG_DBG("MAIN", "Power-button wake released before %lu ms, sleeping", EEGO_WAKE_HOLD_MS);
+        Storage.prepareForDeepSleep();
+        powerManager.startDeepSleep(gpio);
+      }
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // Most devices return to sleep after a USB-powered cold boot.
@@ -872,6 +880,27 @@ void setup() {
     case HalGPIO::WakeupReason::Other:
     default:
       break;
+  }
+
+  // Restore the light only after accepting the wake, so rejected wakes stay dark.
+  // Brightness and warmth are always restored. A normal wake starts with the
+  // light off unless Restore Light on Wake is enabled; silent maintenance
+  // reboots replay the live state captured at restart, so they neither go dark
+  // nor light up against the user's wake preference. A slide switch bound to
+  // the light decides it from its position instead.
+  const bool restoreLightOn = isSilentReboot ? silentRebootLightOn
+                              : slideSwitchOwnsLight()
+                                  ? gpio.isToggleSwitchOn()
+                                  : (SETTINGS.frontlightOn != 0 && SETTINGS.frontlightRestoreOnWake != 0);
+  uint8_t lightBrightness = SETTINGS.frontlightBrightness;
+  uint8_t lightWarmth = SETTINGS.frontlightWarmth;
+  bool lightOn = restoreLightOn;
+  // The light schedule may have opened or closed its window while the device slept.
+  nightlight::adjustBootState(lightBrightness, lightWarmth, lightOn);
+  Frontlight.begin(lightBrightness, lightWarmth, lightOn);
+  // No light to toggle: drop the action so single clicks do not wait for a double click.
+  if (!Frontlight.present() && SETTINGS.doublePwrBtn == CrossPointSettings::PWR_FRONTLIGHT) {
+    SETTINGS.doublePwrBtn = CrossPointSettings::IGNORE;
   }
 
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
@@ -913,7 +942,8 @@ void setup() {
           allowFastInitialReaderRefresh = true;
         }
       } else {
-        // Clean the retained sleep image as part of the first Home paint.
+        // With the fading fix the X3 wake refresh is not promoted to HALF, and
+        // controller RAM is white; clean the retained sleep image on the first Home paint.
         needsWakeRefresh = true;
       }
       break;
@@ -955,14 +985,24 @@ void setup() {
     activityManager.goToReader(APP_STATE.openEpubPath);
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_TAB) {
     // Left a Wi-Fi screen for another tab: land on that tab, not Home.
-    if (silentRebootTab >= SILENT_REBOOT_LIBRARY_TAB_BASE &&
-        silentRebootTab < SILENT_REBOOT_LIBRARY_TAB_BASE + static_cast<uint32_t>(LibraryTabs::count())) {
+    if (silentRebootTab == SILENT_REBOOT_OPDS_SERVERS) {
+      activityManager.goToOpdsServers();
+    } else if (silentRebootTab >= SILENT_REBOOT_LIBRARY_TAB_BASE &&
+               silentRebootTab < SILENT_REBOOT_LIBRARY_TAB_BASE + static_cast<uint32_t>(LibraryTabs::count())) {
       LibraryTabs::activate(static_cast<int>(silentRebootTab - SILENT_REBOOT_LIBRARY_TAB_BASE));
     } else if (silentRebootTab < static_cast<uint32_t>(HomeTab::Count) &&
                silentRebootTab != static_cast<uint32_t>(HomeTab::Home)) {
       HomeTabBar::activate(static_cast<HomeTab>(silentRebootTab), HomeTab::Count);
     } else {
       activityManager.goHome();
+    }
+  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_FLASHCARD_SYNC) {
+    // Restarted between the services of a flashcard sync: the rest syncs on this fresh heap. Its
+    // exit restarts into the Flashcards tab, as any sync does.
+    if (auto sync = AnkiSyncActivity::resumeAfterRestart(renderer, mappedInputManager)) {
+      activityManager.replaceActivity(std::move(sync));
+    } else {
+      HomeTabBar::activate(HomeTab::Flashcards, HomeTab::Count);
     }
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_JOIN_NETWORK) {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
@@ -1009,7 +1049,8 @@ void setup() {
     gpio.update();
   }
 
-  allowSleepAt = millis() + 2000;
+  mappedInputManager.beginPowerInput(!isSilentReboot || suppressRestartPower, mappedInputManager.isPowerHeld());
+  allowSleepAt = millis() + (isSilentReboot ? 0 : 2000);
 }
 
 // A two-button shortcut: Power held together with a side button. The action runs once per
@@ -1022,14 +1063,17 @@ struct PowerCombo {
 // True while the combination owns this loop tick.
 static bool pollPowerCombo(PowerCombo& combo, const uint8_t otherButton, void (*action)()) {
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(otherButton)) {
+    mappedInputManager.resetPowerButtonInput();
     combo.active = true;
     if (combo.armed) {
       combo.armed = false;
+      mappedInputManager.consumePowerGesture();  // the hold is the combo's, not a sleep or a click
       action();
     }
     return true;
   }
   if (!combo.active) return false;
+  mappedInputManager.resetPowerButtonInput();
   // Held until both are up, so neither release reaches the screen underneath as a press of its own.
   // The Power + Up reader action (setComboAction) relies on this: the book's next tick is its only one.
   if (gpio.isPressed(HalGPIO::BTN_POWER) || gpio.isPressed(otherButton)) return true;
@@ -1145,6 +1189,10 @@ void loop() {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
     // sleep, shortcuts, or normal navigation while its filesystem is detached.
     activityManager.loop();
+    if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || remoteActed) {
+      lastInputTime = millis();
+    }
+    idleDisplayWhileAwake();
     if (activityManager.preventAutoSleep()) {
       powerManager.setPowerSaving(false);
       delay(10);
@@ -1273,18 +1321,13 @@ void loop() {
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
-  if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      remoteActed || activityManager.preventAutoSleep()) {
+  const bool userInput = gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() ||
+                         halTiltSensor.hadActivity() || remoteActed;
+  if (userInput) lastInputTime = millis();
+  idleDisplayWhileAwake();
+  if (userInput || activityManager.preventAutoSleep()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
-  }
-
-  // Let wake continue as soon as its hold has been verified. The release can
-  // arrive after setup, so consume that one input frame rather than making it
-  // a page turn, refresh, or other short power-button action.
-  if (wakePowerReleasePending && !gpio.isPressed(HalGPIO::BTN_POWER)) {
-    wakePowerReleasePending = false;
-    return;
   }
 
   // Power + Down: screenshot. Power + Up: the action chosen in Shortcuts.
@@ -1299,44 +1342,17 @@ void loop() {
   const bool powerUpOn = SETTINGS.powerUpAction != CrossPointSettings::SIDE_BTN_NONE;
   if (powerUpOn && pollPowerCombo(powerUpCombo, HalGPIO::BTN_UP, runPowerUpAction)) return;
 
-  // Consume the second X4 Pro power-button release so it does not also run a
-  // configured short-power action after toggling the frontlight.
-  if (handleX4ProFrontlightDoubleClick()) {
-    return;
+  if (mappedInputManager.wasPowerReleaseConsumed()) {
+    mappedInputManager.resetPowerButtonInput();
+    if (!mappedInputManager.powerSleepRequested()) return;
   }
 
-  const bool x4ProDoubleClickPwrLight = BoardConfig::isX4Pro() && SETTINGS.doubleClickPwrLight;
-
-#if FREEINK_CAP_TOUCH
-  // A single X4 Pro power click becomes Confirm only after the frontlight
-  // double-click window expires without a second click.
-  mappedInputManager.setPowerConfirmClickFrame(false);
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PWR_CONFIRM && x4ProDoubleClickPwrLight) {
-    if (lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-      lastX4ProPowerClickAt = 0;
-      mappedInputManager.setPowerConfirmClickFrame(true);
-    }
-    // A release held too long to be a double-click candidate (but still within
-    // the normal Confirm press duration) never reaches handleX4ProFrontlightDoubleClick's
-    // click tracking above, so it needs its own Confirm check here.
-    if (mappedInputManager.wasReleased(MappedInputManager::Button::Power) &&
-        gpio.getPowerButtonHeldTime() > X4PRO_POWER_CLICK_MAX_HOLD_MS &&
-        gpio.getPowerButtonHeldTime() <= SETTINGS.getPowerButtonDuration()) {
-      mappedInputManager.setPowerConfirmClickFrame(true);
-    }
-  }
-#endif
-
-  // Same deferral for SLEEP: getPowerButtonDuration() drops to 10ms so a quick
-  // tap sleeps the device, which otherwise fires on button-down and never lets
-  // a second click land. Sleep only once the double-click window has passed.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP && x4ProDoubleClickPwrLight &&
-      lastX4ProPowerClickAt != 0 && millis() - lastX4ProPowerClickAt > X4PRO_POWER_DOUBLE_CLICK_MS) {
-    lastX4ProPowerClickAt = 0;
+  if (mappedInputManager.powerSleepClick()) {
     enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
+  const bool powerDoubleClickEnabled =
+      CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn != CrossPointSettings::IGNORE;
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
@@ -1346,21 +1362,14 @@ void loop() {
     return;
   }
 
-  // A hold that woke the device must be released before it can count as a new
-  // in-app long press. Otherwise a user who keeps holding after wake would put
-  // the device straight back to sleep once allowSleepAt expires.
-  static bool powerReleasedSinceWake = false;
-  if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerReleasedSinceWake = true;
-
-  // On X4 Pro with SLEEP, a press still within the click window is a
+  // With a double-click action and SLEEP, a press still within the click window is a
   // double-click candidate — let it be released and evaluated above instead
   // of sleeping on button-down.
-  const bool x4ProAwaitingClickWindow = x4ProDoubleClickPwrLight &&
-                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
-                                        gpio.getPowerButtonHeldTime() <= X4PRO_POWER_CLICK_MAX_HOLD_MS;
+  const bool awaitingClickWindow = powerDoubleClickEnabled &&
+                                   SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP &&
+                                   gpio.getPowerButtonHeldTime() <= PowerButtonClickInput::MAX_CLICK_HOLD_MS;
 
-  if (!x4ProAwaitingClickWindow && powerReleasedSinceWake && millis() >= allowSleepAt &&
-      gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+  if (!awaitingClickWindow && millis() >= allowSleepAt && mappedInputManager.powerSleepRequested()) {
     // If a power-button combination is potentially being pressed, don't sleep
     if (gpio.isPressed(HalGPIO::BTN_DOWN) || (powerUpOn && gpio.isPressed(HalGPIO::BTN_UP))) {
       return;
@@ -1378,6 +1387,8 @@ void loop() {
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
   }
+  // A completed long hold stays consumed even when sleep is temporarily blocked.
+  if (mappedInputManager.wasPowerReleaseConsumed()) return;
 
 #if FREEINK_DEVICE_PAPERMONO
   // Paper Mono reports the PMIC power button as a one-tick click, so the held
@@ -1385,7 +1396,7 @@ void loop() {
   // power-button meaning and shut down; explicit alternate bindings still win.
   if ((SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP ||
        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::IGNORE) &&
-      millis() >= allowSleepAt && mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+      millis() >= allowSleepAt && mappedInputManager.wasPowerSingleClick()) {
     enterDeepSleep();
     return;
   }
@@ -1399,7 +1410,7 @@ void loop() {
   const bool sideRefresh = mappedInputManager.sideActionFired(CrossPointSettings::SIDE_BTN_REFRESH);
   if (mappedInputManager.homeButtonAction() == HomeButtonAction::Refresh ||
       (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-       mappedInputManager.wasReleased(MappedInputManager::Button::Power)) ||
+       mappedInputManager.wasPowerSingleClick()) ||
       sideRefresh) {
     forceScreenRefresh();
   }
@@ -1468,7 +1479,7 @@ void loop() {
         delay(10);
         if (gpio.rawInputActive()) {
           // Back to full clock before the press is even debounced: the poll, the activity's
-          // handler and the render that follows would otherwise all start at 10 MHz.
+          // handler and the render that follows would otherwise all start at the low-power clock.
           powerManager.setPowerSaving(false);
           break;
         }

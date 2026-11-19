@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 #include <HalDisplay.h>
+#include <VectorFontSupport.h>
 
 namespace BidiUtils {
 // Paragraph base direction for the Unicode BiDi algorithm (UAX#9).
@@ -57,6 +58,7 @@ class GfxRenderer {
     bool identity() const { return own == 256 && fallback == 256 && !sizeFallbacks && !matchOwnEm; }
   };
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
+  enum class DitherMode { Replace, PreserveInk };
 
   // Logical screen orientation from the perspective of callers
   enum Orientation {
@@ -97,6 +99,24 @@ class GfxRenderer {
   // the same reason as sdCardFonts_ (const layout path triggers a rebuild).
   mutable std::map<int, TtfEpdFont*> ttfFonts_;
 
+#if CROSSPOINT_VECTOR_FONTS
+  // Text drawn larger or smaller than its vector font (CSS font-size, headings) is drawn from a
+  // copy of the font rasterized at that size; other fonts draw the scaled bitmap. Layout still
+  // measures with the registered font; only the glyph images change.
+  struct SizedVectorFace {
+    const TtfEpdFont* root = nullptr;
+    uint16_t pointSize = 0;
+    TtfEpdFont* font = nullptr;  // owned; nullptr with root set = creating it failed
+    uint32_t lastUse = 0;
+  };
+  // E.g. h1-h3 and a span; more sizes than this on one page rebuild faces in turn.
+  static constexpr size_t SIZED_VECTOR_FACE_SLOTS = 4;
+  mutable SizedVectorFace sizedVectorFaces_[SIZED_VECTOR_FACE_SLOTS];
+  mutable uint32_t sizedVectorClock_ = 0;
+#endif
+  // Frees the copies made from `root`; nullptr frees all of them.
+  void releaseSizedVectorFaces(const TtfEpdFont* root) const;
+
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
   // as before, concentrated in a single pointer instead of four fields.
@@ -130,6 +150,11 @@ class GfxRenderer {
   mutable HalDisplay::RefreshMode promotedRefresh_ = HalDisplay::FAST_REFRESH;
   // Swap in (and clear) the promoted mode, if one is pending.
   HalDisplay::RefreshMode applyPromotedRefresh(HalDisplay::RefreshMode refreshMode) const;
+  // See setFastRefreshCleanup(): 0 = off, and the fast refreshes since the last clean one.
+  mutable uint8_t fastCleanupEvery_ = 0;
+  mutable uint8_t fastSinceClean_ = 0;
+  // Turns every fastCleanupEvery_-th fast refresh in a row into a HALF one.
+  HalDisplay::RefreshMode applyFastCleanup(HalDisplay::RefreshMode refreshMode) const;
 
   // Tiled grayscale strip target. When active, drawPixel()/clearScreen()
   // operate on a caller-owned scratch holding one horizontal band of physical
@@ -211,12 +236,15 @@ class GfxRenderer {
   // physical row with head-mask / middle memset / tail-mask byte writes — no
   // per-pixel rotation, no per-pixel RMW.
   template <Color color>
-  void fillRectImpl(int x, int y, int width, int height) const;
+  void fillRectImpl(int x, int y, int width, int height, DitherMode mode = DitherMode::Replace) const;
 
  public:
   explicit GfxRenderer(HalDisplay& halDisplay)
       : display(halDisplay), renderMode(BW), orientation(Portrait), fadingFix(false) {}
-  ~GfxRenderer() { freeBwBufferChunks(); }
+  ~GfxRenderer() {
+    releaseSizedVectorFaces(nullptr);
+    freeBwBufferChunks();
+  }
 
   // Setup
   void begin();  // must be called right after display.begin()
@@ -288,7 +316,11 @@ class GfxRenderer {
   // rebuilds their per-page glyph set on demand — the eager analogue of the SD
   // font prewarm. The TtfEpdFont is owned by the caller (SdCardFontSystem).
   void registerTtfFont(int fontId, TtfEpdFont* font) { ttfFonts_[fontId] = font; }
-  void unregisterTtfFont(int fontId) { ttfFonts_.erase(fontId); }
+  // Also drops the sized copies made from this font: they borrow its FreeType faces, so owners
+  // unregister a font before they free or reload it.
+  void unregisterTtfFont(int fontId);
+  // The copy of `fontId`'s vector face at `scale` (8.8), or nullptr to draw the scaled bitmap.
+  TtfEpdFont* sizedVectorFace(int fontId, uint16_t scale) const;
   const std::map<int, TtfEpdFont*>& getTtfFonts() const { return ttfFonts_; }
   // True when this id is backed by a vector (TTF/OTF) face, whose glyphs are rasterized on
   // demand rather than held in a resident table. Measurement has to resolve those through
@@ -379,6 +411,9 @@ class GfxRenderer {
     promotedRefreshPending_ = true;
     promotedRefresh_ = mode;
   }
+  // Every `every`-th fast refresh in a row runs as HALF, clearing what fast passes leave behind on a
+  // panel whose fast waveform ghosts. 0 turns it off. Set per screen by ActivityManager.
+  void setFastRefreshCleanup(const uint8_t every) const { fastCleanupEvery_ = every; }
   // For a caller whose waveform is not a displayBuffer() (a deferred grayscale base): whether a
   // promotion is waiting, and taking it -- `mode` when none is.
   [[nodiscard]] bool refreshPromotionPending() const { return promotedRefreshPending_; }
@@ -403,7 +438,8 @@ class GfxRenderer {
   // Compatibility queries for Overlay mode.
   bool supportsAsyncGrayscaleBase() const;
   // EXPERIMENTAL: Windowed update - display only a rectangular region
-  // void displayWindow(int x, int y, int width, int height) const;
+  // Repaint a B/W rectangle over retained gray pixels; false means the caller must use its normal paint.
+  bool displayRetainedGrayscaleOverlay(int x, int y, int width, int height, bool restore = false) const;
   void invertScreen() const;
   void clearScreen(uint8_t color = 0xFF) const;
   void getOrientedViewableTRBL(int* outTop, int* outRight, int* outBottom, int* outLeft) const;
@@ -467,7 +503,8 @@ class GfxRenderer {
   // re-render of the content beneath it. Edge-exact (head/tail bit masks), unlike the 8px-aligned
   // readFramebufferRegion/writeFramebufferRegion pair.
   void invertRect(int x, int y, int width, int height) const;
-  void fillRectDither(int x, int y, int width, int height, Color color) const;
+  // PreserveInk adds the pattern's black pixels without clearing existing ink.
+  void fillRectDither(int x, int y, int width, int height, Color color, DitherMode mode = DitherMode::Replace) const;
   void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, Color color) const;
   void fillRoundedRect(int x, int y, int width, int height, int cornerRadius, bool roundTopLeft, bool roundTopRight,
                        bool roundBottomLeft, bool roundBottomRight, Color color) const;
@@ -562,6 +599,9 @@ class GfxRenderer {
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   void drawTextRotated90CCW(int fontId, int x, int y, const char* text, bool black = true,
                             EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  // drawTextRotated90CCW at a scale (8.8 fixed point, 256 = as is), for text set at a CSS font-size.
+  void drawTextRotated90CCWScaled(int fontId, int x, int y, const char* text, uint16_t scale, bool black = true,
+                                  EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
   // Renders one codepoint magnified by an integer factor, its INK box placed at
   // (inkLeftX, inkTopY): the glyph bitmap's top-left lands exactly there, and the glyph's own
   // left/top bearings are deliberately NOT added. The caller is positioning the visible mark
@@ -592,10 +632,12 @@ class GfxRenderer {
   // height, in cellTopY's coordinate space) without drawing. Vertical layout uses it so a
   // rotated Latin run keeps clear of the brackets it sits between.
   bool verticalPunctInkBox(int fontId, uint32_t cp, EpdFontFamily::Style style, int cellTopY, int cellSize,
-                           int shiftType, int* inkTop, int* inkHeight) const;
+                           int shiftType, int* inkTop, int* inkHeight, uint16_t scale = 256) const;
+  // `scale` (8.8 fixed point, 256 = as is) draws the glyph that much larger or smaller, for text set
+  // at a CSS font-size; cellSize is the cell at that size.
   void drawCharVerticalRotatedInCell(int fontId, int cellLeftX, int cellTopY, int cellSize, uint32_t cp, int shiftType,
                                      bool black = true, EpdFontFamily::Style style = EpdFontFamily::REGULAR,
-                                     int* inkTopOut = nullptr, int* inkHeightOut = nullptr) const;
+                                     int* inkTopOut = nullptr, int* inkHeightOut = nullptr, uint16_t scale = 256) const;
   int getTextHeight(int fontId) const;
 
   // Grayscale functions

@@ -44,6 +44,9 @@ struct ReaderRenderSpec {
   // column's ruby is drawn there, and where it is narrower than the ruby the layout holds back
   // the difference. Set by the reader like fontId; 0 (the default) reserves the full ruby width.
   uint16_t rightMarginPx = 0;
+  // Matcha: which publisher fonts were loaded for the book (BookFonts::load), 0 for none. Set by
+  // the reader like fontId; a book laid out with and without them differs.
+  uint32_t bookFontsSignature = 0;
 
   bool operator==(const ReaderRenderSpec&) const = default;
 };
@@ -57,7 +60,7 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
     signature *= 16777619U;
   };
   // Bump when the same spec values lay out differently, so old clipping word ranges stop matching.
-  constexpr uint32_t LAYOUT_SIGNATURE_VERSION = 1;
+  constexpr uint32_t LAYOUT_SIGNATURE_VERSION = 2;
   mix(LAYOUT_SIGNATURE_VERSION);
   mix(static_cast<uint32_t>(spec.fontId));
   mix(static_cast<uint32_t>(spec.lineCompression * 1000.0f));
@@ -71,5 +74,6 @@ inline uint32_t readerRenderSpecSignature(const ReaderRenderSpec& spec) {
   mix(spec.embeddedStyle);
   mix(spec.imageRendering);
   mix(spec.focusReadingEnabled);
+  if (spec.bookFontsSignature != 0) mix(spec.bookFontsSignature);
   return signature == 0 ? 1 : signature;
 }

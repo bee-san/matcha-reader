@@ -1,5 +1,6 @@
 #include "SettingsActivity.h"
 
+#include <AnkiSyncStore.h>
 #include <BlePageTurner.h>
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
@@ -36,15 +37,19 @@
 #include "SilentRestart.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextProfileMenuActivity.h"
+#include "TranslationSettingsActivity.h"
+#include "activities/flashcards/AnkiSyncActivity.h"
 #include "activities/home/StatsSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
+#include "flashcards/FlashcardStore.h"
 #include "fontIds.h"
 #include "util/NightLight.h"
 #include "util/PluginEvents.h"
+#include "util/TaskWatchdog.h"
 
 namespace fui = freeink::ui;
 
@@ -53,17 +58,94 @@ namespace {
 // (it stays in the shared list for the web settings API).
 SettingsSection sectionFor(const SettingInfo& setting);
 
+// The Flashcards Sync group a row starts, or nullptr. Each group's first row is always shown.
+const char* flashcardSyncHeading(const StrId row) {
+  switch (row) {
+    case StrId::STR_SYNC_USE_SERVER:
+      return tr(STR_SYNC_SERVER_HEADING);
+    case StrId::STR_ANKI_SERVER:
+      return tr(STR_ANKI_NAME);
+    case StrId::STR_MIGAKU_SERVER:
+      return tr(STR_MIGAKU_NAME);
+    case StrId::STR_SYNC_MINED_TO:
+      return tr(STR_SYNC_MINED_HEADING);
+    default:
+      return nullptr;
+  }
+}
+
+// A value wider than this share of the screen is cut with an ellipsis, so the row's label stays
+// readable (a long deck list otherwise covers it).
+constexpr int MAX_VALUE_WIDTH_PERCENT = 55;
+
+void fitValueWidth(const fui::DrawTarget& target, const fui::TextStyle& style, const int16_t maxWidth,
+                   std::string& value) {
+  if (target.measureText(style.font, value.c_str(), style).width <= maxWidth) return;
+  static constexpr char ELLIPSIS[] = "\xE2\x80\xA6";
+  // The longest prefix ending at a UTF-8 character start that fits with the ellipsis. Every
+  // length tried is a character start; lo always fits (0 does), hi is an upper bound.
+  const auto isStart = [&value](const size_t at) {
+    return at >= value.size() || (static_cast<uint8_t>(value[at]) & 0xC0) != 0x80;
+  };
+  size_t lo = 0;
+  size_t hi = value.size();
+  std::string candidate;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo + 1) / 2;
+    while (mid > lo && !isStart(mid)) mid--;
+    if (mid == lo) {
+      mid = lo + 1;
+      while (mid <= hi && !isStart(mid)) mid++;
+      if (mid > hi) break;
+    }
+    candidate.assign(value, 0, mid);
+    candidate += ELLIPSIS;
+    if (target.measureText(style.font, candidate.c_str(), style).width <= maxWidth) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  while (lo > 0 && value[lo - 1] == ' ') lo--;
+  value.resize(lo);
+  value += ELLIPSIS;
+}
+
+// Flashcards Sync shows only the rows that apply: the shared server's while it is on (Migaku needs
+// it), a service's while it is on, and where mined words go when both are.
+bool flashcardSyncRowShown(const SettingInfo& setting) {
+  using Server = SyncServiceStore::Server;
+  const bool shared = FLASHCARD_SYNC_STORE.isEnabled();
+  const Server anki = ANKI_STORE.getServer();
+  const Server migaku = MIGAKU_STORE.getServer();
+  switch (setting.nameId) {
+    case StrId::STR_SYNC_SERVER_ADDRESS:
+    case StrId::STR_SYNC_SERVER_KEY:
+      return shared;
+    case StrId::STR_MIGAKU_SERVER:
+      return shared;
+    case StrId::STR_ANKI_ADDRESS:
+    case StrId::STR_ANKI_KEY:
+      return anki == Server::Own;
+    case StrId::STR_ANKI_DECKS:
+      return anki != Server::Off;
+    case StrId::STR_MIGAKU_DECKS:
+      return shared && migaku != Server::Off;
+    case StrId::STR_SYNC_MINED_TO:
+      return anki != Server::Off && migaku != Server::Off;
+    default:
+      return true;
+  }
+}
+
 bool showOnDevice(const SettingInfo& setting) {
   if (sectionFor(setting) == SettingsSection::End || home_button::isSetting(setting.valuePtr)) return false;
-  // The sunlight fading fix is a grayscale-waveform compensation that does
-  // not apply on the X4 Pro / X4 Classic (plain OTP waveform, same panels).
-  if (setting.valuePtr == &CrossPointSettings::fadingFix && (BoardConfig::isX4Pro() || BoardConfig::isX4Classic())) {
-    return false;
-  }
+  if (setting.valuePtr == &CrossPointSettings::fadingFix && !CrossPointSettings::fadingFixSupported()) return false;
   // Merged into the Text Settings screen.
   if (setting.category == StrId::STR_CAT_READER && setting.inTextSettings) return false;
   if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
-      SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
+      SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
+      !(CrossPointSettings::hasPowerDoubleClick() && SETTINGS.doublePwrBtn == CrossPointSettings::FOOTNOTES)) {
     return false;
   }
   // The per-direction gestures only apply while Touch Reader Controls is on.
@@ -72,6 +154,7 @@ bool showOnDevice(const SettingInfo& setting) {
       SETTINGS.touchReaderControls == CrossPointSettings::TOUCH_READER_OFF) {
     return false;
   }
+#if FREEINK_CAP_FRONTLIGHT
   // Light Schedule: each row only for the mode that uses it.
   const uint8_t lightMode = SETTINGS.nightLightMode;
   if (setting.valuePtr == &CrossPointSettings::nightLightStart ||
@@ -79,17 +162,20 @@ bool showOnDevice(const SettingInfo& setting) {
     return lightMode == CrossPointSettings::NIGHT_LIGHT_CUSTOM;
   }
   if (setting.valuePtr == &CrossPointSettings::nightLightCity) return lightMode == CrossPointSettings::NIGHT_LIGHT_SUN;
-  if (setting.valuePtr == &CrossPointSettings::nightLightBrightness)
+  if (setting.valuePtr == &CrossPointSettings::nightLightBrightness) {
     return lightMode != CrossPointSettings::NIGHT_LIGHT_OFF;
+  }
   if (setting.valuePtr == &CrossPointSettings::nightLightWarmth) {
     return lightMode != CrossPointSettings::NIGHT_LIGHT_OFF && Frontlight.hasColorTemperature();
   }
+#endif
   // Only the language tabs have an Unknown one to hide.
   if (setting.valuePtr == &CrossPointSettings::hideUnknownLanguages && !SETTINGS.showLanguageStats) return false;
-  // Both only feed the CrossPoint list view: the cover grid keeps its own index and lists every
+  // These only feed the CrossPoint list view: the cover grid keeps its own index and lists every
   // book the card scan finds, so a book dropped from recents is simply found again.
   if ((setting.valuePtr == &CrossPointSettings::libraryUseMetadata ||
-       setting.valuePtr == &CrossPointSettings::removeReadBooksFromRecents) &&
+       setting.valuePtr == &CrossPointSettings::removeReadBooksFromRecents ||
+       setting.valuePtr == &CrossPointSettings::libraryRecentOpenedOnly) &&
       SETTINGS.libraryView != CrossPointSettings::LIBRARY_VIEW_LIST) {
     return false;
   }
@@ -98,8 +184,7 @@ bool showOnDevice(const SettingInfo& setting) {
 
 // End = not a row here: other categories (KOReader Sync, Status Bar, ...)
 // only group the web UI; their rows live on their own sub-screens.
-// Shortcuts belongs to Controls but opens as a sub-screen from a row in it
-// (isSubScreenCategory); a new sub-screen category goes in both functions.
+// Shortcuts rows sit in the Controls groups; in a book, Reader Settings lists them alone.
 SettingsSection sectionFor(const SettingInfo& setting) {
   if (setting.category == StrId::STR_CAT_DISPLAY) return SettingsSection::Display;
   if (setting.category == StrId::STR_CAT_READER) return SettingsSection::Reader;
@@ -108,13 +193,11 @@ SettingsSection sectionFor(const SettingInfo& setting) {
   if (setting.category == StrId::STR_CAT_LIBRARY) return SettingsSection::Library;
   if (setting.category == StrId::STR_CAT_SLEEP) return SettingsSection::Sleep;
   if (setting.category == StrId::STR_STATS) return SettingsSection::Insights;
+  if (setting.category == StrId::STR_FLASHCARDS) return SettingsSection::Flashcards;
   if (setting.category == StrId::STR_CAT_SHORTCUTS) return SettingsSection::Controls;
+  // Listed on its own page, opened from the Light Schedule row in Display.
   if (setting.category == StrId::STR_CAT_LIGHT_SCHEDULE) return SettingsSection::Display;
   return SettingsSection::End;
-}
-
-bool isSubScreenCategory(const StrId category) {
-  return category == StrId::STR_CAT_SHORTCUTS || category == StrId::STR_CAT_LIGHT_SCHEDULE;
 }
 
 // Position of a row on the Dictionary Settings sub-screen, or -1 for a row it does not show.
@@ -137,32 +220,38 @@ int dictionaryRowOrder(const SettingInfo& setting) {
   }
 }
 
+// The shared long-press setting deliberately appears in both button groups.
+bool belongsToControlsGroup(const SettingInfo& setting, ControlsGroup group) {
+  const auto field = setting.valuePtr;
+  const bool power = field == &CrossPointSettings::shortPwrBtn || field == &CrossPointSettings::powerUpAction ||
+                     (setting.key && std::strcmp(setting.key, "doublePwrBtn") == 0);
+  const bool menu = setting.key && std::strcmp(setting.key, "longPressMenuFunction") == 0;
+  const bool shared = field == &CrossPointSettings::longPressButtonBehavior;
+  switch (group) {
+    case ControlsGroup::Power:
+      return power || field == &CrossPointSettings::pwrBtnFootnoteBack;
+    case ControlsGroup::Front:
+      return shared || menu || field == &CrossPointSettings::frontButtonFollowOrientation ||
+             field == &CrossPointSettings::backShortToFileBrowser;
+    case ControlsGroup::Side:
+      return shared || field == &CrossPointSettings::upperSideButtonAction ||
+             field == &CrossPointSettings::lowerSideButtonAction;
+    case ControlsGroup::Touch:
+      return field == &CrossPointSettings::touchReaderControls || field == &CrossPointSettings::pageTurnGesture ||
+             field == &CrossPointSettings::tiltPageTurn || field == &CrossPointSettings::previousPageGesture ||
+             field == &CrossPointSettings::showReaderMenu;
+    case ControlsGroup::Root:
+      return !belongsToControlsGroup(setting, ControlsGroup::Power) &&
+             !belongsToControlsGroup(setting, ControlsGroup::Front) &&
+             !belongsToControlsGroup(setting, ControlsGroup::Side) &&
+             !belongsToControlsGroup(setting, ControlsGroup::Touch);
+  }
+  return false;
+}
+
 // Device-only action rows added per section, beyond the shared list (System has the most).
 constexpr size_t EXTRA_ROWS_PER_SECTION = 8;
 }  // namespace
-
-void SettingsActivity::rebuildLibraryIndex() {
-  // Prevent SD-backed fonts from opening a second reader while EPUB metadata is scanned.
-  // Keep the popup static because an e-ink refresh per folder would dominate the rebuild.
-  RenderLock lock(*this);
-  GUI.drawPopup(renderer, tr(STR_LIBRARY_REBUILDING));
-
-  library::BuildStats stats;
-  const bool ok = library::buildLibraryIndex("/", stats, SETTINGS.libraryUseMetadata != 0);
-  if (ok) {
-    LOG_INF("LIB", "rebuild: %u books (%u new, %u renamed, %u removed, %u enriched) in %ums",
-            static_cast<unsigned>(stats.books), static_cast<unsigned>(stats.added),
-            static_cast<unsigned>(stats.renamed), static_cast<unsigned>(stats.removed),
-            static_cast<unsigned>(stats.enriched), static_cast<unsigned>(stats.walkMs));
-    if (stats.dedupDegraded) LOG_ERR("LIB", "rebuild completed without duplicate detection");
-  } else {
-    LOG_ERR("LIB", "index rebuild failed");
-  }
-
-  GUI.drawPopup(renderer, ok ? tr(STR_LIBRARY_REBUILD_DONE) : tr(STR_LIBRARY_REBUILD_FAILED));
-  delay(1200);
-  requestUpdate(true);
-}
 
 void SettingsActivity::rebuildSettings() {
   // Pick up any fonts uploaded/deleted over the web server since the last
@@ -177,16 +266,26 @@ void SettingsActivity::rebuildSettings() {
   // Copy only the rows of the one category shown here; each section's title is its category
   // (Connectivity's matches none: it has only action rows).
   const bool dictionaryPage = subCategory == StrId::STR_DICTIONARY_SETTINGS;
-  const StrId category = subCategory != StrId::STR_NONE_OPT && !dictionaryPage
-                             ? subCategory
-                             : SETTINGS_SECTION_TITLES[static_cast<size_t>(section)];
+  // Controls takes the Shortcuts rows too: its groups sort both categories.
+  const bool controlsPage = section == SettingsSection::Controls && subCategory == StrId::STR_NONE_OPT;
+  const StrId category = subCategory != StrId::STR_NONE_OPT && !dictionaryPage ? subCategory
+                         : controlsPage                                        ? StrId::STR_NONE_OPT
+                                        : SETTINGS_SECTION_TITLES[static_cast<size_t>(section)];
   auto all = getSettingsList(&sdFontSystem.registry(), &dictionaries, category);
 
   const auto belongsHere = [this, dictionaryPage](const SettingInfo& setting) {
+    // Flashcards Sync's rows are kept off the Connectivity list (sectionFor() has no section for
+    // them) and shown on their own page.
+    if (isFlashcardSyncPage(subCategory)) {
+      return setting.category == subCategory && flashcardSyncRowShown(setting);
+    }
     if (!showOnDevice(setting)) return false;
     if (dictionaryPage) return dictionaryRowOrder(setting) >= 0;
     if (subCategory != StrId::STR_NONE_OPT) return setting.category == subCategory;
-    return sectionFor(setting) == section && !isSubScreenCategory(setting.category) && dictionaryRowOrder(setting) < 0;
+    if (sectionFor(setting) != section || dictionaryRowOrder(setting) >= 0) return false;
+    // Controls shows its rows by group; in a book, Reader Settings opens the Shortcuts rows alone.
+    if (section == SettingsSection::Controls) return belongsToControlsGroup(setting, controlsGroup);
+    return setting.category != StrId::STR_CAT_LIGHT_SCHEDULE;
   };
   const size_t count = std::count_if(all.begin(), all.end(), belongsHere);
   settings.clear();
@@ -201,12 +300,31 @@ void SettingsActivity::rebuildSettings() {
   // Sub-screens and per-board configurators lead their section, above its own rows.
   addAction(SettingsSection::Reader, StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings);
   addAction(SettingsSection::Reader, StrId::STR_DICTIONARY_SETTINGS, SettingAction::DictionarySettings);
-  addAction(SettingsSection::Controls, StrId::STR_CAT_SHORTCUTS, SettingAction::ShortcutsSettings);
-  if (Frontlight.present()) {
-    addAction(SettingsSection::Display, StrId::STR_CAT_LIGHT_SCHEDULE, SettingAction::LightSchedule);
-  }
-  if (!BoardConfig::hasTouch()) {
-    addAction(SettingsSection::Controls, StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons);
+  addAction(SettingsSection::Reader, StrId::STR_TRANSLATION_SETTINGS, SettingAction::TranslationSettings);
+  if (section == SettingsSection::Controls && subCategory == StrId::STR_NONE_OPT) {
+    if (controlsGroup == ControlsGroup::Root) {
+      if (BoardConfig::hasHomeKey()) {
+        addAction(section, StrId::STR_HOME_BUTTON, SettingAction::HomeButton);
+      }
+      const auto addGroup = [&](ControlsGroup group, StrId title, SettingAction action) {
+        if (std::any_of(all.begin(), all.end(),
+                        [&](const SettingInfo& setting) {
+                          return sectionFor(setting) == section && showOnDevice(setting) &&
+                                 belongsToControlsGroup(setting, group);
+                        }) ||
+            (group == ControlsGroup::Front && !BoardConfig::hasTouch())) {
+          addAction(section, title, action);
+        }
+      };
+      addGroup(ControlsGroup::Power, StrId::STR_POWER_BUTTON, SettingAction::ControlsPower);
+      if (!BoardConfig::hasTouch()) {
+        addGroup(ControlsGroup::Front, StrId::STR_FRONT_BUTTONS, SettingAction::ControlsFront);
+      }
+      addGroup(ControlsGroup::Side, StrId::STR_SIDE_BUTTONS, SettingAction::ControlsSide);
+      addGroup(ControlsGroup::Touch, StrId::STR_TAPS_AND_GESTURES, SettingAction::ControlsTouch);
+    } else if (controlsGroup == ControlsGroup::Front && !BoardConfig::hasTouch()) {
+      addAction(section, StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons);
+    }
   }
   // The Home key's gestures lead the Shortcuts sub-screen.
   if (subCategory == StrId::STR_CAT_SHORTCUTS && BoardConfig::hasHomeKey()) {
@@ -215,7 +333,23 @@ void SettingsActivity::rebuildSettings() {
 
   for (auto& setting : all) {
     if (!belongsHere(setting)) continue;
+    // With the sync server off, a service's choices leave it out.
+    if (setting.nameId == StrId::STR_ANKI_SERVER && !FLASHCARD_SYNC_STORE.isEnabled()) {
+      std::erase(setting.enumOrder, static_cast<uint8_t>(SyncServiceStore::Server::Shared));
+    }
+    if (section == SettingsSection::Controls && subCategory == StrId::STR_NONE_OPT &&
+        setting.valuePtr == &CrossPointSettings::longPressButtonBehavior) {
+      setting.nameId = StrId::STR_PAGE_TURN_LONG_PRESS;
+    }
     settings.push_back(std::move(setting));
+  }
+  if (section == SettingsSection::Controls && controlsGroup == ControlsGroup::Front) {
+    for (const char* key : {"longPressButtonBehavior", "longPressMenuFunction"}) {
+      const auto row = std::find_if(settings.begin(), settings.end(), [key](const SettingInfo& setting) {
+        return setting.key && std::strcmp(setting.key, key) == 0;
+      });
+      if (row != settings.end()) std::rotate(row, row + 1, settings.end());
+    }
   }
   if (dictionaryPage) {
     std::sort(settings.begin(), settings.end(),
@@ -230,6 +364,16 @@ void SettingsActivity::rebuildSettings() {
                     SettingInfo::Action(StrId::STR_LIBRARY_REBUILD, SettingAction::RebuildLibraryIndex));
   }
 
+#if FREEINK_CAP_FRONTLIGHT
+  // Light Schedule sits just above Night Mode, the other light-and-dark row.
+  if (section == SettingsSection::Display && subCategory == StrId::STR_NONE_OPT && Frontlight.present()) {
+    const auto nightMode = std::find_if(settings.begin(), settings.end(), [](const SettingInfo& setting) {
+      return setting.valuePtr == &CrossPointSettings::screenInverted;
+    });
+    settings.insert(nightMode, SettingInfo::Action(StrId::STR_CAT_LIGHT_SCHEDULE, SettingAction::LightSchedule));
+  }
+#endif
+
   // No Manage Fonts row: it sits at the bottom of the font list inside Text Settings.
   addAction(SettingsSection::Reader, StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar);
 
@@ -238,6 +382,7 @@ void SettingsActivity::rebuildSettings() {
   // reading-stats day boundaries.
   addAction(SettingsSection::System, StrId::STR_CLOCK, SettingAction::ClockSettings);
   addAction(SettingsSection::System, StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache);
+  addAction(SettingsSection::System, StrId::STR_DISPLAY_REFRESH, SettingAction::DisplayRefresh);
   addAction(SettingsSection::System, StrId::STR_LANGUAGE, SettingAction::Language);
   addAction(SettingsSection::System, StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts);
   addAction(SettingsSection::System, StrId::STR_PLUGINS, SettingAction::Plugins);
@@ -250,26 +395,37 @@ void SettingsActivity::rebuildSettings() {
   }
 
   addAction(SettingsSection::Insights, StrId::STR_SYNC_STATS, SettingAction::SyncStats);
+  // Right under Enable Flashcards: works in every theme, with or without the tab.
+  if (section == SettingsSection::Flashcards) {
+    SettingInfo open = SettingInfo::Action(StrId::STR_FLASH_OPEN, SettingAction::OpenFlashcards);
+    if (settings.empty()) {
+      settings.push_back(std::move(open));
+    } else {
+      settings.insert(settings.begin() + 1, std::move(open));
+    }
+  }
   addAction(SettingsSection::Connectivity, StrId::STR_WIFI_NETWORKS, SettingAction::Network);
   if (bleturner::status().compiledIn) {
     addAction(SettingsSection::Connectivity, StrId::STR_BT_PAGE_TURNER, SettingAction::Bluetooth);
   }
   addAction(SettingsSection::Connectivity, StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync);
   addAction(SettingsSection::Connectivity, StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser);
+  addAction(SettingsSection::Connectivity, StrId::STR_FLASHCARD_SYNC, SettingAction::FlashcardSync);
   rebuildRowItems();
 }
 
 SettingsActivity::SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                   const SettingsSection section, const StrId subCategory)
-    : UiListActivity("Settings", renderer, mappedInput), section(section), subCategory(subCategory) {}
+                                   const SettingsSection section, const StrId subCategory,
+                                   const ControlsGroup controlsGroup)
+    : UiListActivity("Settings", renderer, mappedInput),
+      section(section),
+      subCategory(subCategory),
+      controlsGroup(controlsGroup) {}
 
 void SettingsActivity::onEnter() {
   UiListActivity::onEnter();
 
-  preserveQuickResumeTimeoutOn =
-      SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-  quickResumeTimeoutAutoEnabled = false;
-  syncQuickResumeTimeoutForSleepScreen(/*sleepScreenChanged=*/true, /*quickResumeTimeoutChanged=*/false);
+  editor.beginQuickResumeSync();
 
   rebuildSettings();
 }
@@ -286,12 +442,25 @@ void SettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
+    if (isFlashcardSyncPage(subCategory)) item.sectionHeading = flashcardSyncHeading(settings[i].nameId);
     rowItems_.push_back(item);
   }
 }
 
 const char* SettingsActivity::headerTitle() const {
   if (subCategory != StrId::STR_NONE_OPT) return I18N.get(subCategory);
+  switch (controlsGroup) {
+    case ControlsGroup::Power:
+      return tr(STR_POWER_BUTTON);
+    case ControlsGroup::Front:
+      return tr(STR_FRONT_BUTTONS);
+    case ControlsGroup::Side:
+      return tr(STR_SIDE_BUTTONS);
+    case ControlsGroup::Touch:
+      return tr(STR_TAPS_AND_GESTURES);
+    case ControlsGroup::Root:
+      break;
+  }
   return I18N.get(SETTINGS_SECTION_TITLES[static_cast<size_t>(section)]);
 }
 
@@ -306,10 +475,6 @@ void SettingsActivity::activateIndex(const int index) {
 }
 
 void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr) {
-  if (valuePtr == &CrossPointSettings::nightLightMode) {
-    if (nightlight::refresh()) SETTINGS.saveToFile();
-    return;
-  }
   // Theme changes take effect immediately, on this screen — reload the theme
   // and re-derive the app's tokens so the very next repaint is in the new look.
   if (valuePtr != &CrossPointSettings::uiTheme) {
@@ -325,6 +490,16 @@ bool SettingsActivity::handleCustomInput() {
   return optionPopup.handleInput(mappedInput, [this] { requestUpdate(); });
 }
 
+void SettingsActivity::saveSettings() { SETTINGS.saveToFile(); }
+
+void SettingsActivity::commitSettingChange(uint8_t CrossPointSettings::* valuePtr) {
+  // A schedule edit takes effect now: the light may switch, and its saved on/off state with it.
+  if (subCategory == StrId::STR_CAT_LIGHT_SCHEDULE) nightlight::refresh();
+  SETTINGS.saveToFile();
+  rebuildSettings();
+  applyUiSettingChange(valuePtr);
+}
+
 void SettingsActivity::toggleSelectedSetting() {
   mappedInput.resetHomeButtonInput();
   const int selectedSetting = nav.selected;
@@ -333,361 +508,125 @@ void SettingsActivity::toggleSelectedSetting() {
   }
 
   const auto& setting = settings[selectedSetting];
-  const bool sleepScreenChanged = setting.valuePtr == &CrossPointSettings::sleepScreen;
-  const bool quickResumeTimeoutChanged = setting.valuePtr == &CrossPointSettings::quickResumeSleepScreen;
-
-  if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
-    openSleepTimeoutPicker();
+  if (setting.type != SettingType::ACTION) {
+    if (editor.editValue(setting) == SettingRowEditor::EditResult::Changed) {
+      if (setting.key && std::strcmp(setting.key, "flashcardVacation") == 0) {
+        flashcards::syncVacation();
+      }
+      // Rows can appear/disappear with a change (e.g. the footnote-back toggle).
+      nav.selected = std::min(selectedSetting, static_cast<int>(settings.size()) - 1);
+    }
     return;
   }
-  if (openLightSchedulePicker(setting)) return;
 
-  if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
-    // Toggle the boolean value using the member pointer
-    const bool currentValue = SETTINGS.*(setting.valuePtr);
-    SETTINGS.*(setting.valuePtr) = !currentValue;
-  } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-    const auto valuePtr = setting.valuePtr;
-    if (editEnumSetting(optionPopup, setting, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged] {
-          syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-          SETTINGS.saveToFile();
-          rebuildSettings();
-          applyUiSettingChange(valuePtr);
-        })) {
-      requestUpdate();
+  switch (setting.action) {
+    case SettingAction::ControlsPower:
+    case SettingAction::ControlsFront:
+    case SettingAction::ControlsSide:
+    case SettingAction::ControlsTouch: {
+      ControlsGroup group = ControlsGroup::Root;
+      switch (setting.action) {
+        case SettingAction::ControlsPower:
+          group = ControlsGroup::Power;
+          break;
+        case SettingAction::ControlsFront:
+          group = ControlsGroup::Front;
+          break;
+        case SettingAction::ControlsSide:
+          group = ControlsGroup::Side;
+          break;
+        case SettingAction::ControlsTouch:
+          group = ControlsGroup::Touch;
+          break;
+        default:
+          break;  // Only the four group actions reach this branch.
+      }
+      // The activity stack owns the child until Back returns to this menu.
+      auto activity = makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput, SettingsSection::Controls,
+                                                          StrId::STR_NONE_OPT, group);
+      if (!activity) {
+        LOG_ERR("SET", "OOM: Controls settings (%u bytes)", static_cast<unsigned>(sizeof(SettingsActivity)));
+        return;
+      }
+      startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
       return;
     }
-  } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
-    const uint8_t totalValues = setting.enumStringValues.empty()
-                                    ? static_cast<uint8_t>(setting.enumLabels().size())
-                                    : static_cast<uint8_t>(setting.enumStringValues.size());
-    const uint8_t cur = setting.valueGetter();
-    if (totalValues > 2) {
-      const auto valueSetter = setting.valueSetter;
-      auto onSelect = [this, valueSetter, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
-        valueSetter(idx);
-        syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-        SETTINGS.saveToFile();
-        rebuildSettings();
-      };
-      if (!setting.enumStringValues.empty()) {
-        optionPopup.show(setting.nameId, setting.enumStringValues, cur, std::move(onSelect));
-      } else {
-        const auto enumLabels = setting.enumLabels();
-        optionPopup.show(setting.nameId, enumLabels.data(), static_cast<int>(enumLabels.size()), cur,
-                         std::move(onSelect));
+    case SettingAction::ShortcutsSettings:
+    case SettingAction::DictionarySettings:
+    case SettingAction::LightSchedule: {
+      const StrId page = setting.action == SettingAction::ShortcutsSettings ? StrId::STR_CAT_SHORTCUTS
+                         : setting.action == SettingAction::LightSchedule   ? StrId::STR_CAT_LIGHT_SCHEDULE
+                                                                            : StrId::STR_DICTIONARY_SETTINGS;
+      auto activity = makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput, section, page);
+      if (!activity) {
+        LOG_ERR("SET", "OOM: settings sub-screen");
+        return;
       }
-      requestUpdate();
+      startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
       return;
     }
-    setting.valueSetter((cur + 1) % totalValues);
-  } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-    const int8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (currentValue + setting.valueRange.step > setting.valueRange.max) {
-      SETTINGS.*(setting.valuePtr) = setting.valueRange.min;
-    } else {
-      SETTINGS.*(setting.valuePtr) = currentValue + setting.valueRange.step;
-    }
-  } else if (setting.type == SettingType::ACTION) {
-    auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
-
-    switch (setting.action) {
-      case SettingAction::ShortcutsSettings:
-      case SettingAction::DictionarySettings:
-      case SettingAction::LightSchedule: {
-        const StrId page = setting.action == SettingAction::ShortcutsSettings ? StrId::STR_CAT_SHORTCUTS
-                           : setting.action == SettingAction::LightSchedule   ? StrId::STR_CAT_LIGHT_SCHEDULE
-                                                                              : StrId::STR_DICTIONARY_SETTINGS;
-        auto activity = makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput, section, page);
-        if (!activity) {
-          LOG_ERR("SET", "OOM: settings sub-screen");
-          return;
-        }
-        startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+    case SettingAction::TranslationSettings: {
+      auto activity = makeUniqueNoThrow<TranslationSettingsActivity>(renderer, mappedInput);
+      if (!activity) {
+        LOG_ERR("SET", "OOM: translation settings");
         return;
       }
-      case SettingAction::HomeButton: {
-        // Activities must outlive this call and are owned by the activity stack.
-        auto activity = makeUniqueNoThrow<HomeButtonSettingsActivity>(renderer, mappedInput);
-        if (!activity) {
-          LOG_ERR("SET", "OOM: Home button settings");
-          return;
-        }
-        startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+      startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+      return;
+    }
+    case SettingAction::FlashcardSync: {
+      auto activity = makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput, SettingsSection::Connectivity,
+                                                          StrId::STR_FLASHCARD_SYNC);
+      if (!activity) {
+        LOG_ERR("SET", "OOM: Flashcards Sync settings");
         return;
       }
-      case SettingAction::RemapFrontButtons:
-        startActivityForResult(std::make_unique<ButtonRemapActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::CustomiseStatusBar:
-        startActivityForResult(std::make_unique<StatusBarSettingsActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::ClockSettings:
-        if (auto activity = makeUniqueNoThrow<ClockSettingsActivity>(renderer, mappedInput)) {
-          startActivityForResult(std::move(activity), resultHandler);
-        } else {
-          LOG_ERR("SETTINGS", "OOM: ClockSettingsActivity");
-        }
-        break;
-      case SettingAction::KOReaderSync:
-        startActivityForResult(std::make_unique<KOReaderSettingsActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::SyncStats:
-        startActivityForResult(
-            std::make_unique<StatsSyncActivity>(renderer, mappedInput, StatsSyncActivity::Origin::Settings),
-            resultHandler);
-        break;
-      case SettingAction::OPDSBrowser:
-        startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::Network: {
-        auto activity = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, false);
-        if (!activity) {
-          LOG_ERR("SETTINGS", "OOM: WifiSelectionActivity");
-          return;
-        }
-        startActivityForResult(std::move(activity), [](const ActivityResult&) {
-          SETTINGS.saveToFile();
-          // Every other WiFi consumer hands the radio to a session it owns;
-          // these rows only save credentials, so nothing here would ever
-          // release the driver's heap. The scan alone brings it up, so tear
-          // down whether or not the user joined a network.
-          if (WiFi.getMode() == WIFI_MODE_NULL) return;
-          WiFi.disconnect(false);
-          delay(30);
-          // Unlike the onExit() teardowns, this runs from the loop task with
-          // no lock held; the restart popup paints straight to the panel.
-          RenderLock lock;
-          silentRestartToSettings();
-        });
-        break;
-      }
-      case SettingAction::Bluetooth: {
-        auto activity = makeUniqueNoThrow<BleSettingsActivity>(renderer, mappedInput);
-        if (!activity) {
-          LOG_ERR("SETTINGS", "OOM: BleSettingsActivity");
-          return;
-        }
-        startActivityForResult(std::move(activity), resultHandler);
-        break;
-      }
-      case SettingAction::RebuildLibraryIndex:
-        rebuildLibraryIndex();
+      startActivityForResult(std::move(activity), [this](const ActivityResult&) { requestUpdate(); });
+      return;
+    }
+    case SettingAction::FlashcardSyncTest: {
+      auto test = makeUniqueNoThrow<AnkiSyncActivity>(renderer, mappedInput, AnkiSyncActivity::Mode::Test);
+      if (!test) {
+        LOG_ERR("SET", "OOM: Anki connection test");
         return;
-      case SettingAction::ClearCache:
-        startActivityForResult(std::make_unique<ClearCacheActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::CheckForUpdates:
-        startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::SdFirmwareUpdate:
-        startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::DownloadFonts:
-        startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) {
-                                 SETTINGS.saveToFile();
-                                 rebuildSettings();
-                               });
-        break;
-      case SettingAction::TextSettings:
-        startActivityForResult(std::make_unique<TextProfileMenuActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) { rebuildSettings(); });
-        break;
-      case SettingAction::Language:
-        // Row labels are translated once in rebuildRowItems() and don't
-        // re-run on Pop (see ActivityManager::loop()), so a language switch
-        // needs an explicit rebuild here rather than the generic resultHandler.
-        startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput),
-                               [this](const ActivityResult&) {
-                                 SETTINGS.saveToFile();
-                                 rebuildSettings();
-                               });
-        break;
-      case SettingAction::Plugins:
-        // A switch row: flips in place.
-        SETTINGS.pluginsEnabled = SETTINGS.pluginsEnabled ? 0 : 1;
-        // Turning plugins on brings back a dismissed Plugin Hub install row.
-        if (SETTINGS.pluginsEnabled) SETTINGS.pluginHubPromptHidden = 0;
-        SETTINGS.saveToFile();
-        // Applies to event delivery now, not after a reboot.
-        pluginevents::refreshSubscriptions();
+      }
+      startActivityForResult(std::move(test), [this](const ActivityResult&) { requestUpdate(); });
+      return;
+    }
+    case SettingAction::OpenFlashcards:
+      activityManager.goToFlashcards();
+      return;
+    case SettingAction::SyncStats:
+      startActivityForResult(
+          std::make_unique<StatsSyncActivity>(renderer, mappedInput, StatsSyncActivity::Origin::Settings),
+          [](const ActivityResult&) { SETTINGS.saveToFile(); });
+      return;
+    case SettingAction::Bluetooth: {
+      auto activity = makeUniqueNoThrow<BleSettingsActivity>(renderer, mappedInput);
+      if (!activity) {
+        LOG_ERR("SETTINGS", "OOM: BleSettingsActivity");
         return;
-      case SettingAction::KeyboardLayouts:
-        if (auto activity = makeUniqueNoThrow<KeyboardLayoutsActivity>(renderer, mappedInput)) {
-          startActivityForResult(std::move(activity), nullptr);
-        } else {
-          LOG_ERR("SETTINGS", "OOM: KeyboardLayoutsActivity");
-        }
-        break;
-      case SettingAction::About:
-        if (auto activity = makeUniqueNoThrow<AboutActivity>(renderer, mappedInput)) {
-          startActivityForResult(std::move(activity), nullptr);
-        } else {
-          LOG_ERR("SETTINGS", "OOM: AboutActivity");
-        }
-        break;
-      case SettingAction::None:
-        // Do nothing
-        break;
-    }
-    return;  // Results will be handled in the result handler, so we can return early here
-  } else {
-    return;
-  }
-
-  syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-  SETTINGS.saveToFile();
-  const auto valuePtr = setting.valuePtr;  // rebuildSettings() replaces `setting`
-  rebuildSettings();
-  applyUiSettingChange(valuePtr);
-  // Rows can appear/disappear with a change (e.g. the footnote-back toggle).
-  nav.selected = std::min(selectedSetting, static_cast<int>(settings.size()) - 1);
-}
-
-void SettingsActivity::syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged) {
-  if (quickResumeTimeoutChanged) {
-    preserveQuickResumeTimeoutOn =
-        SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-    quickResumeTimeoutAutoEnabled = false;
-  }
-
-  if (SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME) {
-    if (SETTINGS.quickResumeSleepScreen != CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT) {
-      SETTINGS.quickResumeSleepScreen = CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
-      quickResumeTimeoutAutoEnabled = !preserveQuickResumeTimeoutOn;
-    } else if (sleepScreenChanged && !preserveQuickResumeTimeoutOn) {
-      quickResumeTimeoutAutoEnabled = true;
-    }
-    return;
-  }
-
-  if (sleepScreenChanged && quickResumeTimeoutAutoEnabled && !preserveQuickResumeTimeoutOn) {
-    SETTINGS.quickResumeSleepScreen = CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_NEVER;
-    quickResumeTimeoutAutoEnabled = false;
-  }
-}
-
-void SettingsActivity::openSleepTimeoutPicker() {
-  startActivityForResult(
-      std::make_unique<IntervalSelectionActivity>(
-          renderer, mappedInput, "SleepTimeoutInterval", StrId::STR_TIME_TO_SLEEP, SETTINGS.sleepTimeoutMinutes,
-          CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1, 5,
-          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, StrId::STR_SLEEP_NEVER),
-      [this](const ActivityResult& result) {
-        if (!result.isCancelled) {
-          SETTINGS.sleepTimeoutMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-          SETTINGS.saveToFile();
-        }
-        requestUpdate();
-      });
-}
-
-bool SettingsActivity::openLightSchedulePicker(const SettingInfo& setting) {
-  const auto valuePtr = setting.valuePtr;
-  const bool timeRow =
-      valuePtr == &CrossPointSettings::nightLightStart || valuePtr == &CrossPointSettings::nightLightEnd;
-  if (timeRow || valuePtr == &CrossPointSettings::nightLightCity) {
-    // Labels live only while the popup is open: 48 times or CITY_COUNT short names.
-    const size_t count = timeRow ? nightlight::HALF_HOURS_PER_DAY : nightlight::CITY_COUNT;
-    std::vector<std::string> labels;
-    labels.reserve(count);
-    char time[12];
-    for (size_t i = 0; i < count; i++) {
-      if (timeRow) {
-        nightlight::formatHalfHour(static_cast<uint8_t>(i), time, sizeof(time));
-        labels.emplace_back(time);
-      } else {
-        labels.emplace_back(nightlight::city(static_cast<uint8_t>(i)).name);
       }
+      startActivityForResult(std::move(activity), [](const ActivityResult&) { SETTINGS.saveToFile(); });
+      return;
     }
-    optionPopup.show(setting.nameId, std::move(labels), SETTINGS.*valuePtr, [this, valuePtr](const int index) {
-      SETTINGS.*valuePtr = static_cast<uint8_t>(index);
-      lightScheduleChanged();
-    });
-    requestUpdate();
-    return true;
+    case SettingAction::TextSettings:
+      startActivityForResult(std::make_unique<TextProfileMenuActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { rebuildSettings(); });
+      return;
+    case SettingAction::Plugins:
+      // A switch row: flips in place.
+      SETTINGS.pluginsEnabled = SETTINGS.pluginsEnabled ? 0 : 1;
+      // Turning plugins on brings back a dismissed Plugin Hub install row.
+      if (SETTINGS.pluginsEnabled) SETTINGS.pluginHubPromptHidden = 0;
+      SETTINGS.saveToFile();
+      // Applies to event delivery now, not after a reboot.
+      pluginevents::refreshSubscriptions();
+      return;
+    default:
+      editor.launchSharedAction(setting.action);
+      return;
   }
-  if (valuePtr == &CrossPointSettings::nightLightBrightness || valuePtr == &CrossPointSettings::nightLightWarmth) {
-    auto activity = makeUniqueNoThrow<IntervalSelectionActivity>(
-        renderer, mappedInput, "NightLightLevel", setting.nameId, SETTINGS.*valuePtr, setting.valueRange.min,
-        setting.valueRange.max, setting.valueRange.step, 10, StrId::STR_PERCENT_VALUE_FORMAT);
-    if (!activity) {
-      LOG_ERR("SET", "OOM: night light level picker");
-      return true;
-    }
-    startActivityForResult(std::move(activity), [this, valuePtr](const ActivityResult& result) {
-      if (!result.isCancelled) {
-        SETTINGS.*valuePtr = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
-        lightScheduleChanged();
-      }
-      requestUpdate();
-    });
-    return true;
-  }
-  return false;
-}
-
-void SettingsActivity::lightScheduleChanged() {
-  nightlight::refresh();
-  SETTINGS.saveToFile();
-  rebuildSettings();
-  requestUpdate();
-}
-
-std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
-  if (setting.action == SettingAction::HomeButton) return tr(STR_CONFIGURE);
-  if (setting.action == SettingAction::LightSchedule) {
-    char summary[48];
-    nightlight::formatSummary(summary, sizeof(summary));
-    return summary;
-  }
-  if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-    // Guard like the valueGetter branch below: a corrupt/migrated settings
-    // byte must not index past the enum table.
-    const uint8_t value = SETTINGS.*(setting.valuePtr);
-    const auto enumLabels = setting.enumLabels();
-    if (value >= enumLabels.size()) return "";
-    return I18N.get(enumLabels[value]);
-  }
-  if (setting.type == SettingType::ENUM && setting.valueGetter) {
-    const uint8_t value = setting.valueGetter();
-    if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
-      return setting.enumStringValues[value];
-    }
-    const auto enumLabels = setting.enumLabels();
-    if (value < enumLabels.size()) {
-      return I18N.get(enumLabels[value]);
-    }
-    return "";
-  }
-  if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
-    if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
-      if (SETTINGS.sleepTimeoutMinutes >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) {
-        return tr(STR_SLEEP_NEVER);
-      }
-      char valueBuffer[32];
-      snprintf(valueBuffer, sizeof(valueBuffer), tr(STR_SLEEP_TIMER_VALUE_FORMAT),
-               static_cast<unsigned int>(SETTINGS.*(setting.valuePtr)));
-      return valueBuffer;
-    }
-    const uint8_t value = SETTINGS.*(setting.valuePtr);
-    if (setting.valuePtr == &CrossPointSettings::nightLightStart ||
-        setting.valuePtr == &CrossPointSettings::nightLightEnd) {
-      char time[12];
-      nightlight::formatHalfHour(value, time, sizeof(time));
-      return time;
-    }
-    if (setting.valuePtr == &CrossPointSettings::nightLightCity) return nightlight::city(value).name;
-    if (setting.valuePtr == &CrossPointSettings::nightLightBrightness ||
-        setting.valuePtr == &CrossPointSettings::nightLightWarmth) {
-      char percent[8];
-      snprintf(percent, sizeof(percent), tr(STR_PERCENT_VALUE_FORMAT), static_cast<unsigned int>(value));
-      return percent;
-    }
-    return std::to_string(value);
-  }
-  return "";
 }
 
 void SettingsActivity::buildScreen(UiScreen& screen) {
@@ -700,6 +639,10 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // rowItems_ (label/actionValue) was built by rebuildRowItems(); only the
   // live value text needs refreshing here, by assigning into the existing
   // rowValues_ strings (no vector growth).
+  // The style the list draws values in (props.valueText is left to the theme).
+  fui::TextStyle valueStyle = screen.theme().smallText;
+  valueStyle.maxLines = 1;
+  const auto maxValueWidth = static_cast<int16_t>(renderer.getScreenWidth() * MAX_VALUE_WIDTH_PERCENT / 100);
   for (size_t i = 0; i < settings.size(); i++) {
     const auto& setting = settings[i];
     const auto labels = setting.enumLabels();
@@ -714,7 +657,8 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
       rowValues_[i].clear();
       GUI.setCheckboxRow(rowItems_[i], checked);
     } else {
-      rowValues_[i] = settingValueText(setting);
+      rowValues_[i] = SettingRowEditor::valueText(setting);
+      fitValueWidth(screen.target(), valueStyle, maxValueWidth, rowValues_[i]);
       rowItems_[i].value = rowValues_[i].empty() ? nullptr : rowValues_[i].c_str();
     }
   }
@@ -730,6 +674,14 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // maxLines also marks smallText as explicit so the list does not replace it with bodyText.
   props.labelText = mappedInput.hasTouch() ? screen.theme().bodyText : screen.theme().smallText;
   props.labelText.maxLines = 2;
+  if (isFlashcardSyncPage(subCategory)) {
+    // Group headings as in Text Settings: the small UI font, on their first row, with room above.
+    props.headerText = screen.theme().smallText;
+    props.headerText.font = fui::GfxRendererTarget::FONT_LABEL;
+    props.headerUnderline = 0;
+    props.headerRowHeight = static_cast<int16_t>(screen.target().lineHeight(props.headerText.font));
+    props.sectionGap = 28;
+  }
   syncListViewport(screen, props);
   screen.list(props);
 }

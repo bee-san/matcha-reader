@@ -5,6 +5,7 @@
 
 #include <array>
 #include <climits>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -37,6 +38,10 @@ class ChapterHtmlSlimParser {
   int skipUntilDepth = INT_MAX;
   int boldUntilDepth = INT_MAX;
   int italicUntilDepth = INT_MAX;
+  // Depth of the open h1-h6, INT_MAX outside one. Blocks started inside it are not
+  // hyphenated: a title split across lines mid-word reads badly.
+  int headingDepth = INT_MAX;
+  bool blockHyphenationEnabled() const { return hyphenationEnabled && headingDepth == INT_MAX; }
   // buffer for building up words from characters, will auto break if longer than this
   // leave one char at end for null pointer
   char partWordBuffer[MAX_WORD_SIZE + 1] = {};
@@ -132,6 +137,18 @@ class ChapterHtmlSlimParser {
   [[nodiscard]] bool preserveWhitespaceActive() const {
     return whitespaceScopeCount > 0 && whitespaceScopes[whitespaceScopeCount - 1].preserve;
   }
+  // font-family is inherited too, and <body> sets it without being a block: each element that
+  // names a family opens a scope holding its publisher font id (0 = the reader font).
+  struct FontFamilyScope {
+    uint16_t pathDepth;
+    int fontId;
+  };
+  static constexpr uint8_t MAX_FONT_FAMILY_SCOPES = 8;
+  FontFamilyScope fontFamilyScopes[MAX_FONT_FAMILY_SCOPES] = {};
+  uint8_t fontFamilyScopeCount = 0;
+  [[nodiscard]] int inheritedFamilyFontId() const {
+    return fontFamilyScopeCount > 0 ? fontFamilyScopes[fontFamilyScopeCount - 1].fontId : 0;
+  }
   void emitPreservedSpaces(uint32_t visibleOffset);
   void preservedLineBreak();
   // Widow/orphan control: a paragraph's lone first line, or its lone last line, moves to the next
@@ -169,6 +186,8 @@ class ChapterHtmlSlimParser {
   float lineCompression;
   bool extraParagraphSpacing;
   uint8_t paragraphIndentSpaces = 2;
+  float cardBasePx = 0.0f;    // set for a flashcard side; see setCardFontBase
+  std::string pixelCacheDir;  // set for a flashcard side; see setPixelCacheDir
   int8_t characterSpacing = 0;
   uint8_t wordSpacingPercent = 100;
   uint8_t paragraphAlignment;
@@ -358,6 +377,8 @@ class ChapterHtmlSlimParser {
 
   void flushPendingAnchor();
   void flushPartWordBuffer();
+  // Lays out all but the last line of a block grown past its word limit (`reason` is logged).
+  void softFlushIfLong(const char* reason);
   void fallbackTableRowToStacked();
   void closeTableCell();
   void finishTableRow();
@@ -371,7 +392,8 @@ class ChapterHtmlSlimParser {
   static void applyVerticalAlignToEntry(StyleStackEntry& entry, const CssStyle& css);
   void pushTableTextStyleEntry(const CssStyle& cssStyle);
   void pushDecorationStyleEntry(CssTextDecoration defaultDecoration, const CssStyle& cssStyle);
-  void pushBlockFontScaleEntry(const CssStyle& cssStyle);
+  void pushBlockFontScaleEntry(const CssStyle& cssStyle, int baseFontId);
+  int blockBaseFontId(const CssStyle& cssStyle) const;
   void emitHorizontalRule(const BlockStyle& blockStyle);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
@@ -419,6 +441,12 @@ class ChapterHtmlSlimParser {
     wordSpacingPercent = wordPercent;
   }
   void setParagraphIndentSpaces(const uint8_t spaces) { paragraphIndentSpaces = spaces; }
+  // Lays out a flashcard side: font sizes are taken against the card's base size (cardBasePx)
+  // and kept near the reader's size (cardFontSize). 0 = a book.
+  void setCardFontBase(const float basePx) { cardBasePx = basePx; }
+  // A standalone page's images cache their decoded pixels here ("<dir><image name>.pxc") instead
+  // of next to the image. With a trailing '/'; the folder must exist.
+  void setPixelCacheDir(std::string dir) { pixelCacheDir = std::move(dir); }
 
   // One-shot parse: builds every page before returning (begin + step* + finish).
   bool parseAndBuildPages();

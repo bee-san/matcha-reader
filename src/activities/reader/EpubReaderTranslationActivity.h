@@ -6,7 +6,6 @@
 
 #include "activities/Activity.h"
 #include "components/PanelTextPages.h"
-#include "util/ButtonNavigator.h"
 
 // The page's translation in the floating dictionary panel, drawn over the page: the connection,
 // progress and any error are shown inside the panel too. A saved network is joined from the panel
@@ -75,10 +74,9 @@ class EpubReaderTranslationActivity final : public Activity {
   void stepPage(int direction);
   void cancel();
 
-  ButtonNavigator buttonNavigator;
-
   bool readApiKey(std::string& keyOut);
   bool callGeminiApi(const std::string& apiKey);
+  int postToModel(const std::string& apiKey, const std::string& model, std::string& response);
 
   void onWifiComplete(bool success);
 };

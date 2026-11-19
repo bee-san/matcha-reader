@@ -24,8 +24,10 @@
 #include <string_view>
 #include <vector>
 
+#include "Epub/ContentCache.h"
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"
+#include "Epub/parsers/FontObfuscationProbe.h"
 #include "Epub/parsers/TocNavParser.h"
 #include "Epub/parsers/TocNcxParser.h"
 
@@ -127,13 +129,21 @@ class CancellablePrint final : public Print {
   size_t write(uint8_t value) override { return write(&value, 1); }
   size_t write(const uint8_t* buffer, size_t size) override {
     if (shouldCancel && shouldCancel(cancelCtx)) return 0;
+    // Background work (a cover conversion, a lookup scan) runs at the main loop's priority. A long
+    // decrypt-and-write would keep the idle task off the CPU until the task watchdog resets.
+    if (millis() - lastYieldMs >= YIELD_EVERY_MS) {
+      vTaskDelay(1);
+      lastYieldMs = millis();
+    }
     return output.write(buffer, size);
   }
 
  private:
+  static constexpr uint32_t YIELD_EVERY_MS = 100;
   Print& output;
   BmpConvertCancelFn shouldCancel;
   void* cancelCtx;
+  uint32_t lastYieldMs = millis();
 };
 
 // Notes when the sink took less than it was offered: an early-stop reader (an image-header probe)
@@ -628,6 +638,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, BmpConvert
 
   // Before any parsing: a protected book's entries are only readable through the accessor.
   if (!openProtection()) return false;
+  content_cache::checkSource(filepath, cachePath);
 
   // Initialize spine/TOC cache
   bookMetadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
@@ -822,6 +833,7 @@ bool Epub::loadMetadata(std::string& title, std::string& author) {
     return true;
   }
 
+  content_cache::checkSource(filepath, cachePath);  // the Library must not list a replaced file's old title
   auto metadataCache = makeUniqueNoThrow<BookMetadataCache>(cachePath);
   if (metadataCache && metadataCache->load()) {
     title = metadataCache->coreMetadata.title;
@@ -905,12 +917,15 @@ bool Epub::clearCache() const {
   return true;
 }
 
+bool Epub::clearContentCache() const { return content_cache::clear(cachePath); }
+
 void Epub::setupCacheDir() const {
   if (Storage.exists(cachePath.c_str())) {
     return;
   }
 
   Storage.mkdir(cachePath.c_str());
+  content_cache::stamp(filepath, cachePath);
 }
 
 const std::string& Epub::getCachePath() const { return cachePath; }
@@ -1384,6 +1399,16 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
   return content;
 }
 
+std::string Epub::readUniqueIdentifier() const {
+  std::string opf;
+  UniqueIdentifierProbe probe;
+  if (!findContentOpfFile(&opf) || !probe.setup() || !ZipFile(filepath).readFileToStream(opf.c_str(), probe, 512) ||
+      !probe.finish()) {
+    return {};
+  }
+  return probe.identifier();
+}
+
 bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, const size_t chunkSize,
                                     const bool allowEarlyStop, BmpConvertCancelFn shouldCancel, void* cancelCtx) const {
   if (itemHref.empty()) {
@@ -1604,16 +1629,17 @@ int Epub::resolveHrefToSpineIndex(const std::string& href) const {
   size_t targetSlash = target.find_last_of('/');
   std::string targetFilename = (targetSlash != std::string::npos) ? target.substr(targetSlash + 1) : target;
 
+  // An exact path match anywhere beats the first filename-only match.
+  int filenameMatch = -1;
   for (int i = 0; i < getSpineItemsCount(); i++) {
     const auto& spineHref = getSpineItem(i).href;
-    // Try exact match first
     if (spineHref == target) return i;
-    // Then filename-only match
-    size_t spineSlash = spineHref.find_last_of('/');
-    std::string spineFilename = (spineSlash != std::string::npos) ? spineHref.substr(spineSlash + 1) : spineHref;
-    if (spineFilename == targetFilename) return i;
+    if (filenameMatch != -1) continue;
+    const size_t spineSlash = spineHref.find_last_of('/');
+    if (spineHref.compare(spineSlash == std::string::npos ? 0 : spineSlash + 1, std::string::npos, targetFilename) == 0)
+      filenameMatch = i;
   }
-  return -1;
+  return filenameMatch;
 }
 
 CssParser::StylesheetFilter Epub::stylesheetFilterFor(const std::string& htmlPath,

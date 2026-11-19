@@ -43,8 +43,7 @@ void formatHalfHour(const uint8_t halfHour, char* buf, const size_t size) {
 
 bool nightActive() { return lastPhase() == Phase::Night; }
 
-void saveLevels(const uint8_t brightness, const uint8_t warmth) {
-  const bool night = nightActive();
+void saveLevels(const uint8_t brightness, const uint8_t warmth, const bool night) {
   (night ? SETTINGS.nightLightBrightness : SETTINGS.frontlightBrightness) = brightness;
   (night ? SETTINGS.nightLightWarmth : SETTINGS.frontlightWarmth) = warmth;
 }

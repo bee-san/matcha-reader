@@ -23,10 +23,10 @@
 #include "components/StatsWidgets.h"
 #include "components/UITheme.h"
 #include "components/icons/flame.h"
-#include "components/icons/panelIcons.h"
 #include "components/icons/stats_icons.h"
 #include "fontIds.h"
 #include "stats/StatsSync.h"
+#include "util/DateFormat.h"
 
 namespace {
 using StatsWidgets::dayLabel;
@@ -47,13 +47,19 @@ int statsDaysReadInMonth(const void* ctx, const uint16_t year, const uint8_t mon
              : READING_STATS_STORE.getDaysReadInMonth(year, month);
 }
 
-// "34m" or "2h 14m".
-void formatMinutes(char* out, const size_t size, const int minutes) {
-  if (minutes >= 60) {
-    snprintf(out, size, "%dh %dm", minutes / 60, minutes % 60);
+// "best 1h 12m on Nov 8"; the year is shown when it is not this one.
+void formatBestDay(char* out, const size_t size, const ReadingStatsStore::BestDay& best, const uint16_t thisYear) {
+  char duration[16];
+  if (best.minutes >= 60) {
+    snprintf(duration, sizeof(duration), "%uh %um", best.minutes / 60u, best.minutes % 60u);
   } else {
-    snprintf(out, size, "%dm", minutes);
+    snprintf(duration, sizeof(duration), "%um", static_cast<unsigned>(best.minutes));
   }
+  char abbrev[16];
+  char date[32];
+  formatDate(date, sizeof(date), best.year == thisYear ? tr(STR_DAY_MONTH_FORMAT) : tr(STR_DATE_FORMAT), best.year,
+             best.month, best.day, StatsWidgets::monthAbbrev(best.month, abbrev, sizeof(abbrev)));
+  snprintf(out, size, tr(STR_BEST_DAY_FORMAT), duration, date);
 }
 }  // namespace
 
@@ -90,7 +96,7 @@ void ReadingStatsActivity::stepTab(const int direction) {
 
 void ReadingStatsActivity::ringSetFocus(const TabRing::Focus focus, const bool atEnd) {
   refreshFocused = false;
-  tabFocus = focus == TabRing::Focus::BottomBar ? static_cast<int>(HomeTab::Stats) : -1;
+  tabFocus = focus == TabRing::Focus::BottomBar ? HomeTabBar::slotOf(HomeTab::Stats) : -1;
   // The top of the ring is the top of the page, where the tabs are; coming up out of the bar
   // lands at the page's end.
   if (focus == TabRing::Focus::TopTabs) scrollOffset = 0;
@@ -328,9 +334,12 @@ void ReadingStatsActivity::render(RenderLock&&) {
   int y = contentTop + 8;
 
   // ==================== STREAK WIDGET ====================
-  y += StatsWidgets::drawStreakCard(renderer, cardX, y, cardW, streak, weekMinutes, weekDays, today.dow) + 16;
+  const uint16_t todayMinutes = code ? READING_STATS_STORE.getMinutesForDay(code, today.year, today.month, today.day)
+                                     : READING_STATS_STORE.getMinutesForDay(today.year, today.month, today.day);
+  y += StatsWidgets::drawStreakCard(renderer, cardX, y, cardW, streak, todayMinutes, weekMinutes, weekDays, today.dow) +
+       16;
 
-  // ==================== 6 STAT CARDS (2x3) ====================
+  // ==================== 4 STAT CARDS (2x2) ====================
   const int booksFinished =
       code ? static_cast<int>(READING_STATS_STORE.getBooksFinished(code)) : READING_STATS_STORE.getBooksFinished();
   const int daysRead = code ? READING_STATS_STORE.getDaysRead(code) : READING_STATS_STORE.getDaysRead();
@@ -346,40 +355,27 @@ void ReadingStatsActivity::render(RenderLock&&) {
     snprintf(timeBuf, sizeof(timeBuf), "%dm", static_cast<int>(totalMin));
   snprintf(streakLBuf, sizeof(streakLBuf), "%d", longestStreak);
 
-  // This device's own per-day minutes: the fork is read on one device.
-  const uint16_t todayMin = code ? READING_STATS_STORE.getMinutesForDay(code, today.year, today.month, today.day)
-                                 : READING_STATS_STORE.getMinutesForDay(today.year, today.month, today.day);
-  const auto best = code ? READING_STATS_STORE.getBestDay(code) : READING_STATS_STORE.getBestDay();
-  char todayBuf[16], bestBuf[16], bestLabel[48];
-  formatMinutes(todayBuf, sizeof(todayBuf), todayMin);
-  formatMinutes(bestBuf, sizeof(bestBuf), best.minutes);
-  if (best.minutes > 0) {
-    char month[16];
-    StatsWidgets::monthAbbrev(best.month, month, sizeof(month));
-    // The year only when it is not this one.
-    if (best.year == today.year) {
-      snprintf(bestLabel, sizeof(bestLabel), "%s, %s %d", tr(STR_STAT_BEST_DAY), month, static_cast<int>(best.day));
-    } else {
-      snprintf(bestLabel, sizeof(bestLabel), "%s, %s %d %d", tr(STR_STAT_BEST_DAY), month, static_cast<int>(best.day),
-               static_cast<int>(best.year));
-    }
-  } else {
-    snprintf(bestLabel, sizeof(bestLabel), "%s", tr(STR_STAT_BEST_DAY));
-  }
-
-  const StatsWidgets::Tile tiles[6] = {
-      {todayBuf, tr(STR_STAT_READ_TODAY), PanelSunIcon, true},
-      {bestBuf, bestLabel, ChartBarIcon, true},
+  const StatsWidgets::Tile tiles[4] = {
       {booksBuf, tr(STR_STAT_BOOKS_FINISHED), BookOpenIcon24, false},
       {daysBuf, tr(STR_STAT_DAYS_READ), CalendarIcon24, false},
       {timeBuf, tr(STR_STAT_TOTAL_TIME), ClockIcon24, false},
       {streakLBuf, tr(STR_STAT_LONGEST_STREAK), FlameIcon, true},
   };
-  y += StatsWidgets::drawTileGrid(renderer, cardX, y, cardW, tiles, static_cast<int>(std::size(tiles))) + 8;
+  y += StatsWidgets::drawTileGrid(renderer, cardX, y, cardW, tiles) + 8;
 
   // ==================== CALENDAR ====================
   const StatsWidgets::MonthSource source{code, statsMonthStatus, statsDaysReadInMonth};
-  y += StatsWidgets::drawMonthCalendar(renderer, cardX, y, cardW, calYear, calMonth, today, source, &monthNav);
+  const auto best = READING_STATS_STORE.getBestDay(code);
+  StatsWidgets::DayMarks marks;
+  char bestNote[64];
+  if (best.minutes > 0) {
+    marks.bestYear = best.year;
+    marks.bestMonth = best.month;
+    marks.bestDay = best.day;
+    formatBestDay(bestNote, sizeof(bestNote), best, today.year);
+    marks.note = bestNote;
+  }
+  y += StatsWidgets::drawMonthCalendar(renderer, cardX, y, cardW, calYear, calMonth, today, source, &monthNav, &marks);
 
   // ==================== REFRESH STATS ====================
   // A quiet text action: icon and small text, outlined only while focused.
