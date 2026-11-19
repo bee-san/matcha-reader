@@ -9,6 +9,17 @@ Do not design, test or document for several devices. Cross-device cases, such as
 view, progress or stats synced from another reader, and per-device labels, need no extra handling unless the
 user asks for it.
 
+Always merge upstream first. Whenever you start work on this project, before any other change:
+
+1. `git fetch upstream origin` (`upstream` is eszter007/matcha-reader, push disabled).
+2. On `main` (this fork's integration branch, not `develop`), merge `upstream/develop`. Fast-forward `main` to
+   `origin/main` first if it is behind.
+3. Resolve conflicts. Fork features that upstream has since taken in come back in upstream's reviewed form: take
+   upstream's version, and keep only what is fork-only (X4 Pro-only CI, Screen AI OCR, the Discord badge). Watch
+   for clean auto-merges that duplicate code: `git diff --stat upstream/develop -- src lib test` should list
+   only deliberate fork changes.
+4. Build `pio run -e x4pro`, then commit the merge. Continue on a feature branch from the merged `main`.
+
 ## FreeInk SDK
 
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
