@@ -26,6 +26,11 @@ class MangaReaderActivity final : public PagedReaderActivity {
                             /*allowFastInitialRefresh=*/false) {}
 
   void render(RenderLock&&) override;
+  // Set by this loop task before the worker is notified, so the main loop cannot light-sleep in the
+  // gap before the worker takes its power lock.
+  bool preventAutoSleep() override { return prefetchBusy.load(); }
+  // Automatic page turning is timed by this loop.
+  bool allowsLongIdleSleep() const override { return !automaticPageTurnActive; }
 
  protected:
   bool loadBook() override;

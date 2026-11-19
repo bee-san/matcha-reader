@@ -9,6 +9,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalMemory.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Memory.h>
@@ -1275,10 +1276,13 @@ void MangaReaderActivity::prefetchTaskLoop() {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (prefetchExitRequested) break;
     if (!prefetchBusy) continue;  // spurious/coalesced notification with no job posted
-    if (prefetchJob.isPanel) {
-      workerWarmPanel();
-    } else {
-      workerWarmNextPage();
+    {
+      HalPowerManager::Lock powerLock;  // keeps the main loop from light-sleeping mid-warm
+      if (prefetchJob.isPanel) {
+        workerWarmPanel();
+      } else {
+        workerWarmNextPage();
+      }
     }
     // Release the job slot LAST: the loop task treats busy==false as "job+result are mine".
     prefetchBusy = false;

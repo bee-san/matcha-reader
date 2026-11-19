@@ -4,6 +4,7 @@
 #include <ContentCacheReclaim.h>
 #include <Epub.h>
 #include <FsHelpers.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <MangaPanel.h>
@@ -87,7 +88,10 @@ void CoverWorker::loop() {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     if (exitRequested_) break;
     if (!busy_.load(std::memory_order_acquire)) continue;
-    runJob();
+    {
+      HalPowerManager::Lock powerLock;  // keeps the main loop from light-sleeping mid-job
+      runJob();
+    }
     // Publishes result_ to the loop task.
     busy_.store(false, std::memory_order_release);
   }

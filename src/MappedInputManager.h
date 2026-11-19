@@ -53,6 +53,8 @@ class MappedInputManager {
   // a button press shows it, a touch hides it again. Always true on boards without touch.
   static bool buttonCursorShown();
   bool powerSleepClick() const { return powerSleepFrame; }
+  // A power click is still inside its double-click window.
+  bool powerClickPending() const { return powerButtonClickInput.isPending(); }
   bool wasPowerSingleClick() const {
     return powerSingleClickFrame || (wasReleased(Button::Power) && wasShortPowerReleased());
   }

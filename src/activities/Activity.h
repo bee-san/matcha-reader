@@ -47,6 +47,9 @@ class Activity {
 
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
+  // True when this screen has no timer beyond a few seconds after input, so the idle device may
+  // light-sleep until the next minute instead of waking every second.
+  virtual bool allowsLongIdleSleep() const { return false; }
   // Exclusive storage activities suspend global controls and normal activity
   // transitions so no filesystem code races a raw SD-card owner.
   virtual bool requiresExclusiveStorageLoop() const { return false; }

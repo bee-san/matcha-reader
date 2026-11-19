@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <PowerManager.h>
 #include <WiFi.h>
+#include <driver/gpio.h>
 #include <esp_sleep.h>
 #include <soc/soc_caps.h>
 #if SOC_USB_SERIAL_JTAG_SUPPORTED
@@ -17,10 +18,6 @@
 
 #if FREEINK_DEVICE_EEGO_A4 || FREEINK_DEVICE_PICCO
 #include <HalFrontlight.h>
-#endif
-
-#if FREEINK_DEVICE_PICCO
-#include <driver/gpio.h>
 #endif
 
 #if FREEINK_DEVICE_PAPERMONO
@@ -107,6 +104,40 @@ bool HalPowerManager::usbHostActive() {
 #else
   return false;
 #endif
+}
+
+void HalPowerManager::idleLightSleep(HalGPIO& gpio, const uint32_t maxMs) const {
+  const auto& in = BoardConfig::ACTIVE.input;
+  struct WakePin {
+    int8_t pin;
+    bool activeLow;
+  };
+  const WakePin pins[] = {
+      {in.back, true},
+      {in.confirm, true},
+      {in.left, true},
+      {in.right, true},
+      {in.up, true},
+      {in.down, true},
+      {in.power, !in.powerActiveHigh},
+      {gpio.touchWakePin(), gpio.touchWakeActiveLow()},
+  };
+  for (const auto& w : pins) {
+    if (w.pin < 0) continue;
+    gpio_wakeup_enable(static_cast<gpio_num_t>(w.pin), w.activeLow ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+  }
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(maxMs) * 1000ULL);
+  esp_light_sleep_start();
+  for (const auto& w : pins) {
+    if (w.pin < 0) continue;
+    const auto g = static_cast<gpio_num_t>(w.pin);
+    gpio_wakeup_disable(g);
+    // gpio_wakeup_disable() keeps the level type; a later pinMode() would enable it as an
+    // interrupt that fires continuously while the button is held.
+    gpio_set_intr_type(g, GPIO_INTR_DISABLE);
+  }
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 }
 
 void HalPowerManager::startDeepSleep(HalGPIO& gpio, const bool wakeOnHeldButton) const {

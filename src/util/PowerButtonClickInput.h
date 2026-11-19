@@ -38,6 +38,8 @@ class PowerButtonClickInput {
   }
 
   void reset() { pending = false; }
+  // A click is waiting for its double-click window to close.
+  bool isPending() const { return pending; }
 
  private:
   bool pending = false;

@@ -126,6 +126,12 @@ class HalGPIO {
   // or the T5S3 expander key, one I2C read), without going through the debounced state.
   // Cheap enough to call every few ms.
   bool rawInputActive();
+  // True when, as of the last update(), no button, touch contact, Home key or injected press is
+  // down and no edge is still debouncing. Light sleep is only safe in this state.
+  bool inputQuiet() const;
+  // GPIO that wakes light sleep on a touch, or -1 when touch has to be polled.
+  int8_t touchWakePin() const { return inputMgr.touchWakeIrqPin(); }
+  bool touchWakeActiveLow() const { return inputMgr.touchWakeIrqActiveLow(); }
   bool hasTouch() const;
   // Capacitive Home key reported by the touch controller (X4 Pro). The tap
   // event fires on release and excludes a long hold.

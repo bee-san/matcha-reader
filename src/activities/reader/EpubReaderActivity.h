@@ -1043,6 +1043,8 @@ class EpubReaderActivity final : public ReaderActivity {
            (section && section->isBuilding() && !buildHeapPaused &&
             (section->isPartial() || static_cast<int>(section->pageCount) < section->currentPage + BUILD_WINDOW_AHEAD));
   }
+  // Automatic page turning is timed by this loop.
+  bool allowsLongIdleSleep() const override { return !automaticPageTurnActive; }
   bool remoteShortcut(bool readerMenu) override;
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;

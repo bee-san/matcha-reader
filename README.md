@@ -175,6 +175,7 @@ A wallpaper over the page you were reading. The book shows through. See [Guide ย
 - Publisher fonts on boards with PSRAM (X4 Pro and others): a book can be drawn in the fonts it ships, horizontal and vertical
 - Japanese and Chinese interface language support
 - Light Schedule (X4 Pro and other devices with a frontlight): the light turns on dim and warm at night, at set times or from sunset to sunrise in your city, and turns off in the morning. See [Guide ยง1](USER_GUIDE.md#light-schedule)
+- Saves battery on the X4 Pro: about a second after your last touch or button press, the device rests until the next one. It stays awake while the light is on, USB is connected, or Wi-Fi or Bluetooth is on
 
 ## Setup
 

@@ -26,8 +26,10 @@
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
+#include <sys/time.h>
 #include <time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstring>
@@ -1156,6 +1158,45 @@ static void runPowerUpAction() {
   }
 }
 
+// Light sleep between page turns. X4 Pro only: every input there is a wake-capable GPIO or the
+// GT911 INT. The caller has already checked input and the activity's own work; this covers
+// everything else that needs the CPU or a peripheral clock.
+static bool canIdleLightSleep() {
+  if (!BoardConfig::isX4Pro()) return false;
+  // A render, section build, cover/prefetch worker, or the Bluetooth radio.
+  if (powerManager.isLocked() || pageturner::holdsCpu.load()) return false;
+  if (activityManager.renderPending() || activityManager.preventAutoSleep()) return false;
+  if (WiFi.getMode() != WIFI_MODE_NULL) return false;
+  // The frontlight PWM clock stops in light sleep, which would blank the light.
+  if (Frontlight.isOn()) return false;
+  // A pending power double-click is timed by this loop.
+  if (mappedInputManager.powerClickPending()) return false;
+  // Touch must be able to wake the chip; without its INT wake pin it has to be polled.
+  if (gpio.hasTouch() && gpio.touchWakePin() < 0) return false;
+  // Light sleep drops the USB link. isPlugged() also sees a host while the battery is full and the
+  // charge status no longer reports USB.
+  if (gpio.isUsbConnected() || HWCDC::isPlugged()) return false;
+  return true;
+}
+
+// How long the next idle light sleep may last. For the first seconds after input the loop wakes every
+// second, for short screen timers such as messages and the image refine. After that a screen without
+// timers of its own sleeps to the next minute (clock, light schedule) or to the auto-sleep deadline.
+static uint32_t idleLightSleepMs(const unsigned long idleMs) {
+  constexpr unsigned long kLongSleepAfterMs = 10000;
+  if (idleMs < kLongSleepAfterMs || !activityManager.allowsLongIdleSleep()) {
+    return HalPowerManager::LIGHT_SLEEP_TIMER_MS;
+  }
+  timeval now{};
+  gettimeofday(&now, nullptr);
+  const auto intoMinuteMs = static_cast<uint32_t>(now.tv_sec % 60) * 1000U + static_cast<uint32_t>(now.tv_usec / 1000);
+  // Just past the boundary, so the minute has turned when the loop runs.
+  uint32_t sleepMs = 60000U - intoMinuteMs + 20U;
+  const unsigned long timeoutMs = SETTINGS.getSleepTimeoutMs();
+  if (timeoutMs > idleMs) sleepMs = std::min<uint32_t>(sleepMs, timeoutMs - idleMs);
+  return sleepMs;
+}
+
 void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
@@ -1451,6 +1492,7 @@ void loop() {
   }
 
   bool skipLoopDelay = false;
+  const bool inputQuiet = gpio.inputQuiet();
   {
     RenderLock lock{RenderLock::Try{}};
     if (!lock.held()) {
@@ -1459,6 +1501,16 @@ void loop() {
       return;
     }
     skipLoopDelay = activityManager.skipLoopDelay();
+    // Asleep under the render lock, so no render can start until the next pass.
+    if (!skipLoopDelay && inputQuiet && millis() - lastActivityTime >= HalPowerManager::LIGHT_SLEEP_IDLE_MS &&
+        canIdleLightSleep()) {
+      powerManager.setPowerSaving(true);
+      const unsigned long sleepStart = millis();
+      powerManager.idleLightSleep(gpio, idleLightSleepMs(sleepStart - lastActivityTime));
+      // A wake pin still asserted with no input latched would otherwise spin the loop at full rate.
+      if (millis() - sleepStart < 5) delay(10);
+      return;
+    }
   }
 
   // Add delay at the end of the loop to prevent tight spinning
@@ -1468,7 +1520,8 @@ void loop() {
     powerManager.setPowerSaving(false);  // Make sure we're at full performance when skipLoopDelay is requested
     yield();                             // Give FreeRTOS a chance to run tasks, but return immediately
   } else {
-    if (millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS && !pageturner::holdsCpu.load()) {
+    if (inputQuiet && millis() - lastActivityTime >= HalPowerManager::IDLE_POWER_SAVING_MS &&
+        !pageturner::holdsCpu.load()) {
       // If we've been inactive for a while, increase the delay to save power
       powerManager.setPowerSaving(true);  // Lower CPU frequency after extended inactivity
       // Sleep in short slices and wake the poll as soon as a button contact closes.

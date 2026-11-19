@@ -90,6 +90,8 @@ class ActivityManager {
   std::atomic<bool> requestedUpdate{false};
   // Bumped by every update request, see updateRequestCount().
   std::atomic<uint32_t> updateRequests{0};
+  // updateRequests as the render task read it before its last completed render.
+  std::atomic<uint32_t> servedUpdateRequests{0};
 
   // Counts screen changes, so the Bluetooth page turner can tell one visit of a book from the next.
   // Written by the main loop under RenderLock; the render task captures it under that lock.
@@ -150,6 +152,7 @@ class ActivityManager {
   void popActivity();
 
   bool preventAutoSleep() const;
+  bool allowsLongIdleSleep() const;
   bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;
   // Bluetooth page turner (lib/BlePageTurner): the book in front, whether it has painted a page, and
@@ -191,6 +194,11 @@ class ActivityManager {
   // result handler). A screen that repaints only part of its frame compares it across a render to
   // prove that nothing else asked for a redraw in the meantime.
   uint32_t updateRequestCount() const { return updateRequests.load(std::memory_order_relaxed); }
+  // True while a requested render has not finished yet (queued, waiting for the lock, or running).
+  bool renderPending() const {
+    return requestedUpdate.load() ||
+           updateRequests.load(std::memory_order_acquire) != servedUpdateRequests.load(std::memory_order_acquire);
+  }
 };
 
 extern ActivityManager activityManager;  // singleton, to be defined in main.cpp

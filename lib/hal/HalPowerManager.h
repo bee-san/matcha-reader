@@ -59,11 +59,22 @@ class HalPowerManager {
   static constexpr unsigned long USB_HOST_HOLD_MS = 1000;      // ms
   static constexpr unsigned long IDLE_POWER_SAVING_MS = 3000;  // ms
   static constexpr unsigned long BATTERY_POLL_MS = 1500;       // ms
+  // Idle time after the last input before the main loop may light-sleep.
+  static constexpr unsigned long LIGHT_SLEEP_IDLE_MS = 1000;
+  // Timer wake while asleep: keeps clock, schedules and auto-sleep running.
+  static constexpr uint32_t LIGHT_SLEEP_TIMER_MS = 1000;
 
   void begin();
 
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
+
+  // True while any Lock is held, i.e. some task needs the CPU running.
+  bool isLocked() const { return lockCount.load(std::memory_order_acquire) != 0; }
+
+  // Light-sleep until a digital button or the touch wake pin asserts, or maxMs passes. The caller
+  // must first make sure nothing needs the CPU: no input down, render, worker, radio or USB.
+  void idleLightSleep(HalGPIO& gpio, uint32_t maxMs) const;
 
   // Setup wake up GPIO and enter deep sleep
   // Should be called inside main loop() to handle the pending lock state
@@ -86,6 +97,8 @@ class HalPowerManager {
   // RAII helper class to manage power saving locks
   // Usage: create an instance of Lock in a scope to disable power saving, for example when running a task that needs
   // full performance. Locks nest: power saving is re-enabled when the LAST one goes out of scope.
+  // A background task doing work must hold one: with none held the idle main loop may light-sleep,
+  // which stops every task.
   class Lock {
     friend class HalPowerManager;
 

@@ -209,6 +209,16 @@ bool HalGPIO::rawInputActive() {
   return (g1.raw >= 0 && g1.raw < kIdleRailMin) || (g2.raw >= 0 && g2.raw < kIdleRailMin);
 }
 
+bool HalGPIO::inputQuiet() const {
+  if (injCount_ != 0 || injDown_ != 0 || injReleaseDue_) return false;
+  // Latched state only: a fresh read would poll the GT911 here and consume touch events update()
+  // has not delivered. Anything that changes after update() asserts a level wake pin instead.
+  for (uint8_t i = 0; i <= BTN_POWER; ++i) {
+    if (inputMgr.isPressed(i)) return false;
+  }
+  return !inputMgr.isDebouncePending() && !inputMgr.isTouchPressed() && !inputMgr.isHomeKeyDown();
+}
+
 unsigned long HalGPIO::getHeldTime() const {
   // An injected press reports its own hold time, not that of the last real press: a tap would
   // otherwise read as a long press.
