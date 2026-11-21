@@ -13,6 +13,8 @@
 #include "components/themes/BaseTheme.h"
 #include "util/CjkScript.h"
 
+struct LanguageEntry;
+
 // Reader text settings for one text profile, under a live preview: Font and Size rows, then the
 // Layout and Style rows under their headings. Font and Size open a popup of their choices.
 class TextSettingsActivity final : public UiListActivity {
@@ -31,10 +33,15 @@ class TextSettingsActivity final : public UiListActivity {
   // profile: the profile these settings are (the title). In a book the live settings already hold
   // it; from Settings (editStoredProfile) it is swapped in on enter and back out on exit.
   // bookScript/verticalText: the open book's script and direction, which pick the preview face
-  // and hide rows the book's layout does not read.
+  // and hide rows the book's layout does not read. bookRtl: the book declares right-to-left page
+  // order, which Automatic vertical text follows.
   TextSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const SdCardFontRegistry* registry,
                        CrossPointSettings::TextProfileId profile, CjkScript bookScript = CjkScript::None,
-                       bool verticalText = false, bool editStoredProfile = false);
+                       bool verticalText = false, bool editStoredProfile = false, bool bookRtl = false);
+
+  // In a book whose hyphenation rules are a download not yet made, the Hyphenation row offers it.
+  // The reader closes for the download and bookPath reopens afterwards.
+  void setHyphenationPack(const LanguageEntry* language, std::string bookPath);
 
   void onEnter() override;
   void onExit() override;
@@ -51,7 +58,9 @@ class TextSettingsActivity final : public UiListActivity {
     Alignment,
     ScreenMargin,
     BookSideMargins,
-    VerticalText,  // Japanese and Chinese, from Settings only
+    VerticalText,  // Japanese and Chinese
+    Furigana,      // Japanese and Chinese: ruby over the text
+    WordMarks,     // Japanese and Chinese: lines in word lookup
     Count
   };
   enum class StyleRow { FocusReading, Hyphenation, EmbeddedStyle, PublisherFonts, AntiAliasing, Count };
@@ -90,6 +99,11 @@ class TextSettingsActivity final : public UiListActivity {
   int visibleLayoutRows(LayoutRow* out) const;
   // The vertical-text setting this screen edits (tategaki or zhipai), or null.
   uint8_t* verticalTextSetting() const;
+  // Whether the book is laid out in columns, so the Layout rows match it. In a book, a vertical
+  // text change made here applies on return, so the rows follow it.
+  bool verticalLayout() const;
+  // Japanese and Chinese profiles have the rows for their scripts.
+  bool cjkProfile() const;
   // CJK books hide FocusReading/Hyphenation.
   StyleRow styleRowAt(int visibleIndex) const;
   int styleRowCount() const { return visibleStyleRows(nullptr); }
@@ -112,6 +126,12 @@ class TextSettingsActivity final : public UiListActivity {
   const bool cjkBook_ = false;
   const bool verticalText_ = false;
   const bool editStoredProfile_;
+  const bool bookRtl_ = false;
+  const LanguageEntry* hyphenationPack_ = nullptr;
+  std::string bookPath_;
+  bool hyphenationPackMissing_ = false;
+  // The vertical-text setting on entry: until it changes, the book keeps its own direction.
+  uint8_t initialVerticalMode_ = 0;
   // Another profile is swapped into the live fields for editing (Settings holds the Latin ones).
   bool swappedIn_ = false;
   // A family was picked here (not just cleared by a failed load).

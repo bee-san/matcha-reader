@@ -38,9 +38,6 @@ void BaseTheme::setCheckboxRow(freeink::ui::ListItem& item, const bool checked) 
 
 // Internal constants
 namespace {
-constexpr int homeMenuMargin = 20;
-constexpr int homeMarginTop = 30;
-constexpr int subtitleY = 738;
 constexpr int bookmarkStatusIconWidth = 16;
 constexpr int bookmarkStatusIconHeight = 14;
 constexpr int bookmarkStatusIconGap = 4;
@@ -1084,7 +1081,7 @@ void BaseTheme::fillPopupProgress(const GfxRenderer& renderer, const Rect& layou
 void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage,
                               const int pageCount, std::string title, const int paddingBottom, const int textYOffset,
                               const bool fillMargin, const bool isPageBookmarked, const bool pageCountEstimated,
-                              const int timeLeftSeconds) {
+                              const int timeLeftSeconds, const CharCount chars) {
   auto metrics = UITheme::getInstance().getMetrics();
   int orientedMarginTop, orientedMarginRight, orientedMarginBottom, orientedMarginLeft;
   renderer.getOrientedViewableTRBL(&orientedMarginTop, &orientedMarginRight, &orientedMarginBottom,
@@ -1154,6 +1151,16 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
     const int timeWidth = renderer.getTextWidth(SMALL_FONT_ID, timeStr);
     renderer.drawText(SMALL_FONT_ID, rightClusterX - rightClusterWidth - gap - timeWidth, textY, timeStr);
     rightClusterWidth += gap + timeWidth;
+  }
+
+  // Character count, ahead of the time left.
+  if (sb.charCountMode != CrossPointSettings::CHAR_COUNT_HIDE && chars.visible()) {
+    char charStr[32];
+    chars.format(charStr, sizeof(charStr));
+    const int gap = rightClusterWidth > 0 ? renderer.getTextWidth(SMALL_FONT_ID, "  ") : 0;
+    const int charWidth = renderer.getTextWidth(SMALL_FONT_ID, charStr);
+    renderer.drawText(SMALL_FONT_ID, rightClusterX - rightClusterWidth - gap - charWidth, textY, charStr);
+    rightClusterWidth += gap + charWidth;
   }
 
   // Draw Progress Bar

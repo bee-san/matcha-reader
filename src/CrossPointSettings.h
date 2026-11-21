@@ -36,6 +36,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     COVER_TRANSPARENT = 9,
     SLEEP_SCREEN_MODE_COUNT
   };
+  enum MINING_CARDS { MINING_SENTENCE_CARDS = 0, MINING_WORD_CARDS = 1, MINING_CARDS_COUNT };
   enum SLEEP_SCREEN_COVER_MODE { FIT = 0, CROP = 1, SLEEP_SCREEN_COVER_MODE_COUNT };
   enum SLEEP_SCREEN_COVER_FILTER {
     NO_FILTER = 0,
@@ -342,6 +343,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Time left in the status bar, from the reading speed in this book (ReadingPace).
   enum STATUS_BAR_TIME_LEFT : uint8_t { TIME_LEFT_CHAPTER = 0, TIME_LEFT_BOOK = 1, TIME_LEFT_HIDE = 2 };
   uint8_t statusBarTimeLeft = TIME_LEFT_HIDE;
+  // Characters read out of the chapter's or the book's total, in the status bar.
+  enum STATUS_BAR_CHAR_COUNT : uint8_t { CHAR_COUNT_CHAPTER = 0, CHAR_COUNT_BOOK = 1, CHAR_COUNT_HIDE = 2 };
+  uint8_t statusBarCharCount = CHAR_COUNT_HIDE;
   // LEGACY, kept for migration only: quarter-hour UTC offset biased by 48
   // (48 = UTC+0). Superseded by clockTimezone; read once by
   // timezones::activeIndex() when clockTimezone is unset.
@@ -402,9 +406,14 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // copy could never be changed once that book had prefs saved.
   uint8_t reversePageTurn = 0;
   // Whether Japanese (tategaki), Traditional Chinese (zhipai) and Simplified Chinese (zhipaiSimplified)
-  // books open in vertical columns. The per-book
-  // vertical toggle overrides both. AUTOMATIC follows the book's declared page order.
+  // books open in vertical columns. A book's own choice overrides them. AUTOMATIC follows the book's declared page
+  // order.
   enum VERTICAL_MODE : uint8_t { VERTICAL_AUTOMATIC = 0, VERTICAL_ON = 1, VERTICAL_OFF = 2, VERTICAL_MODE_COUNT };
+  // Whether a book with no choice of its own opens vertically under `mode`. rtl: the book
+  // declares right-to-left page order.
+  static constexpr bool verticalFor(const uint8_t mode, const bool rtl) {
+    return mode == VERTICAL_ON || (mode != VERTICAL_OFF && rtl);
+  }
   uint8_t tategaki = VERTICAL_AUTOMATIC;
   uint8_t zhipai = VERTICAL_AUTOMATIC;
   uint8_t zhipaiSimplified = VERTICAL_AUTOMATIC;
@@ -438,6 +447,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Draw a book in its own embedded fonts (@font-face) where it ships them; vector-font boards
   // only. Per text profile like the font itself.
   uint8_t publisherFonts = 0;
+  // Japanese/Chinese word lookup: a line under (horizontal) or beside (vertical) every word the
+  // dictionary knows, while picking a word. Per text profile; the Latin value is never used.
+  uint8_t lookupWordMarks = 0;
+  // Japanese and Chinese: ruby (furigana, pinyin or zhuyin) over the text. A book's own choice
+  // overrides it. Per text profile; the Latin value is never used.
+  uint8_t furigana = 1;
   // Text profiles: books in each script keep their own font, size and spacing. The live fields
   // (fontFamily, sdFontFamilyName, fontPointSize, lineSpacing, characterSpacing, wordSpacing) hold
   // the Latin profile; a book in another script swaps its profile in while it is open
@@ -451,7 +466,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     uint8_t wordSpacing = 100;
     uint8_t fontFamily = NOTOSERIF;
     char sdFontFamilyName[32] = "";
-    uint8_t publisherFonts = 0;  // see CrossPointSettings::publisherFonts
+    uint8_t publisherFonts = 0;   // see CrossPointSettings::publisherFonts
+    uint8_t lookupWordMarks = 0;  // see CrossPointSettings::lookupWordMarks
+    uint8_t furigana = 1;         // see CrossPointSettings::furigana
     bool operator==(const TextProfile&) const = default;
   };
   TextProfile liveTextProfile() const;
@@ -575,12 +592,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t wordLookupFontSize = WORD_LOOKUP_FONT_SMALL;
   // Page translation's target language: an index into gemini::TARGET_LANGUAGES (0 = English).
   uint8_t translationTarget = 0;
-  // Flashcards from the sentence-mining export (Settings > Flashcards). The tab is opt-in.
-  uint8_t flashcardsTab = 0;
-  uint8_t flashcardVacation = 0;     // reviews paused; see flashcards::syncVacation
-  uint8_t flashcardRetention = 2;    // 80/85/90/95 %
-  uint8_t flashcardNewPerDay = 1;    // 5/10/20/30/50
-  uint8_t flashcardMaxInterval = 3;  // 1 month / 6 months / 1 year / no limit
+  // Sentence mining: a word is saved once per sentence, or once in all (MINING_CARDS).
+  uint8_t miningCards = MINING_SENTENCE_CARDS;
   // Append every successful dictionary lookup to /Vocabulary.txt (default off).
   uint8_t vocabularyHistoryEnabled = 0;
   // Reader menu open gesture (SHOW_READER_MENU: off / center tap / bottom-edge
@@ -691,6 +704,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     uint8_t progressBarHeightPx = 0;          // (thickness+1)*2; 0 when the bar is hidden
     uint8_t xtcMode = XTC_STATUS_BAR_HIDE;    // XTC_STATUS_BAR_MODE
     uint8_t timeLeftMode = TIME_LEFT_HIDE;    // STATUS_BAR_TIME_LEFT
+    uint8_t charCountMode = CHAR_COUNT_HIDE;  // STATUS_BAR_CHAR_COUNT
 
     bool showsProgressBar() const { return progressBarMode != HIDE_PROGRESS; }
     bool showsTitle() const { return titleMode != HIDE_TITLE; }
@@ -698,8 +712,8 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     // Visibility of the text lane. Whether a clock can be read is the caller's
     // concern: pass halClock.hasTime(), or true for layout reservation.
     bool textLaneVisible(bool clockAvailable) const {
-      return showChapterPageCount || showBookProgressPercent || timeLeftMode != TIME_LEFT_HIDE || showsTitle() ||
-             showBattery || (showsClock() && clockAvailable);
+      return showChapterPageCount || showBookProgressPercent || timeLeftMode != TIME_LEFT_HIDE ||
+             charCountMode != CHAR_COUNT_HIDE || showsTitle() || showBattery || (showsClock() && clockAvailable);
     }
   };
   StatusBarSpec statusBarSpec() const;

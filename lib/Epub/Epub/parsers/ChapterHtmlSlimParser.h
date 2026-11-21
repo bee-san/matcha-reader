@@ -186,8 +186,6 @@ class ChapterHtmlSlimParser {
   float lineCompression;
   bool extraParagraphSpacing;
   uint8_t paragraphIndentSpaces = 2;
-  float cardBasePx = 0.0f;    // set for a flashcard side; see setCardFontBase
-  std::string pixelCacheDir;  // set for a flashcard side; see setPixelCacheDir
   int8_t characterSpacing = 0;
   uint8_t wordSpacingPercent = 100;
   uint8_t paragraphAlignment;
@@ -302,6 +300,8 @@ class ChapterHtmlSlimParser {
   // <body> text. Token offsets flow through line breaking so every completed page
   // records the first source character it renders.
   uint32_t visibleTextOffset = 0;
+  // Visible codepoints so far without furigana and whitespace, for the reader's character count.
+  uint32_t readableTextChars = 0;
   uint32_t partWordVisibleOffset = 0;
   uint32_t currentPageVisibleOffset = 0;
   bool currentPageVisibleOffsetSet = false;
@@ -441,12 +441,6 @@ class ChapterHtmlSlimParser {
     wordSpacingPercent = wordPercent;
   }
   void setParagraphIndentSpaces(const uint8_t spaces) { paragraphIndentSpaces = spaces; }
-  // Lays out a flashcard side: font sizes are taken against the card's base size (cardBasePx)
-  // and kept near the reader's size (cardFontSize). 0 = a book.
-  void setCardFontBase(const float basePx) { cardBasePx = basePx; }
-  // A standalone page's images cache their decoded pixels here ("<dir><image name>.pxc") instead
-  // of next to the image. With a trailing '/'; the folder must exist.
-  void setPixelCacheDir(std::string dir) { pixelCacheDir = std::move(dir); }
 
   // One-shot parse: builds every page before returning (begin + step* + finish).
   bool parseAndBuildPages();
@@ -464,6 +458,9 @@ class ChapterHtmlSlimParser {
 
   void addLineToPage(std::unique_ptr<TextBlock> line, uint32_t visibleOffset);
   const std::deque<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
+  // Totals of the text parsed so far: the chapter's totals once the parse has finished.
+  uint32_t getVisibleTextChars() const { return visibleTextOffset; }
+  uint32_t getReadableTextChars() const { return readableTextChars; }
   // Every footnote reference in the section with the page it appears on (same page counter as
   // getAnchors), for the section-wide footnote table -- see Section::loadSectionFootnotes().
   const std::vector<std::pair<uint16_t, FootnoteEntry>>& getSectionFootnotes() const { return sectionFootnoteData; }

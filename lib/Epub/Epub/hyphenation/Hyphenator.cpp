@@ -1,5 +1,6 @@
 #include "Hyphenator.h"
 
+#include <IndicScripts.h>
 #include <Utf8.h>
 
 #include <algorithm>
@@ -22,13 +23,21 @@ struct Iso639Mapping {
   const char* iso639_2;
   const char* iso639_1;
 };
-static constexpr Iso639Mapping kIso639Mappings[] = {{"eng", "en"}, {"fra", "fr"}, {"fre", "fr"}, {"deu", "de"},
-                                                    {"ger", "de"}, {"rus", "ru"}, {"spa", "es"}, {"ita", "it"},
-                                                    {"ukr", "uk"}, {"swe", "sv"}, {"fin", "fi"}};
+// Norwegian Bokmål and Nynorsk share the "no" patterns; Kurmanji is tagged "kmr" as well as "ku".
+static constexpr Iso639Mapping kIso639Mappings[] = {
+    {"eng", "en"}, {"fra", "fr"}, {"fre", "fr"}, {"deu", "de"}, {"ger", "de"}, {"rus", "ru"}, {"spa", "es"},
+    {"ita", "it"}, {"ukr", "uk"}, {"swe", "sv"}, {"fin", "fi"}, {"pol", "pl"}, {"por", "pt"}, {"afr", "af"},
+    {"cat", "ca"}, {"ces", "cs"}, {"cze", "cs"}, {"dan", "da"}, {"est", "et"}, {"glg", "gl"}, {"hrv", "hr"},
+    {"hun", "hu"}, {"isl", "is"}, {"ice", "is"}, {"lat", "la"}, {"lit", "lt"}, {"nld", "nl"}, {"dut", "nl"},
+    {"nor", "no"}, {"nob", "no"}, {"nno", "no"}, {"nb", "no"},  {"nn", "no"},  {"slk", "sk"}, {"slo", "sk"},
+    {"slv", "sl"}, {"sqi", "sq"}, {"alb", "sq"}, {"tuk", "tk"}, {"tur", "tr"}, {"kur", "ku"}, {"kmr", "ku"},
+    {"bel", "be"}, {"bul", "bg"}, {"mon", "mn"}, {"srp", "sr"}, {"ell", "el"}, {"gre", "el"}, {"kat", "ka"},
+    {"geo", "ka"}};
 
-// Maps a BCP-47 or ISO 639-2 language tag to a language-specific hyphenator.
-const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
-  if (langTag.empty()) return nullptr;
+}  // namespace
+
+std::string Hyphenator::primaryTag(const std::string& langTag) {
+  if (langTag.empty()) return {};
 
   // Extract primary subtag and normalize to lowercase (e.g., "en-US" -> "en", "ENG" -> "en").
   std::string primary;
@@ -38,9 +47,9 @@ const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
     if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
     primary.push_back(c);
   }
-  if (primary.empty()) return nullptr;
+  if (primary.empty()) return {};
 
-  // Normalize ISO 639-2 three-letter codes to two-letter equivalents.
+  // Map ISO 639-2 codes and other tags to the tag the patterns are filed under.
   for (const auto& mapping : kIso639Mappings) {
     if (primary == mapping.iso639_2) {
       primary = mapping.iso639_1;
@@ -48,7 +57,19 @@ const LanguageHyphenator* hyphenatorForLanguage(const std::string& langTag) {
     }
   }
 
-  return getLanguageHyphenatorForPrimaryTag(primary);
+  return primary;
+}
+
+namespace {
+
+// Fallback break indexes for a word the language patterns could not split:
+// every index leaving minPrefix/minSuffix codepoints on each side, except
+// inside an Indic syllable, whose halves would each shape on their own.
+void appendFallbackIndexes(const std::vector<CodepointInfo>& cps, const size_t minPrefix, const size_t minSuffix,
+                           std::vector<size_t>& out) {
+  for (size_t idx = minPrefix; idx + minSuffix <= cps.size(); ++idx) {
+    if (idx == 0 || indic::syllableBreakAllowed(cps[idx - 1].value, cps[idx].value)) out.push_back(idx);
+  }
 }
 
 // Maps a codepoint index back to its byte offset inside the source word.
@@ -100,11 +121,7 @@ void appendSegmentPatternBreaks(const std::vector<CodepointInfo>& cps, const Lan
       auto segIndexes = hyphenator.breakIndexes(segment);
 
       if (includeFallback && segIndexes.empty()) {
-        const size_t minPrefix = hyphenator.minPrefix();
-        const size_t minSuffix = hyphenator.minSuffix();
-        for (size_t idx = minPrefix; idx + minSuffix <= segment.size(); ++idx) {
-          segIndexes.push_back(idx);
-        }
+        appendFallbackIndexes(segment, hyphenator.minPrefix(), hyphenator.minSuffix(), segIndexes);
       }
 
       for (const size_t idx : segIndexes) {
@@ -245,9 +262,7 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   if (includeFallback && indexes.empty()) {
     const size_t minPrefix = hyphenator ? hyphenator->minPrefix() : LiangWordConfig::kDefaultMinPrefix;
     const size_t minSuffix = hyphenator ? hyphenator->minSuffix() : LiangWordConfig::kDefaultMinSuffix;
-    for (size_t idx = minPrefix; idx + minSuffix <= cps.size(); ++idx) {
-      indexes.push_back(idx);
-    }
+    appendFallbackIndexes(cps, minPrefix, minSuffix, indexes);
   }
 
   if (indexes.empty()) {
@@ -272,4 +287,12 @@ std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& w
   return breaks;
 }
 
-void Hyphenator::setPreferredLanguage(const std::string& lang) { cachedHyphenator_ = hyphenatorForLanguage(lang); }
+void Hyphenator::resetPacks() {
+  cachedHyphenator_ = nullptr;
+  resetHyphenationPacks();
+}
+
+void Hyphenator::setPreferredLanguage(const std::string& lang, const bool loadPack) {
+  const std::string primary = primaryTag(lang);
+  cachedHyphenator_ = primary.empty() ? nullptr : getLanguageHyphenatorForPrimaryTag(primary, loadPack);
+}
