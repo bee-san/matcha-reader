@@ -49,6 +49,8 @@ CrossPointSettings::TextProfile CrossPointSettings::liveTextProfile() const {
   TextProfile p{fontPointSize, lineSpacing, characterSpacing, wordSpacing, fontFamily, {}};
   copyToField(p.sdFontFamilyName, sdFontFamilyName, sizeof(p.sdFontFamilyName));
   p.publisherFonts = publisherFonts;
+  p.lookupWordMarks = lookupWordMarks;
+  p.furigana = furigana;
   return p;
 }
 
@@ -60,6 +62,8 @@ void CrossPointSettings::setLiveTextProfile(const TextProfile& p) {
   fontFamily = p.fontFamily;
   copyToField(sdFontFamilyName, p.sdFontFamilyName, sizeof(sdFontFamilyName));
   publisherFonts = p.publisherFonts;
+  lookupWordMarks = p.lookupWordMarks;
+  furigana = p.furigana;
 }
 
 void CrossPointSettings::holdLatinTextProfile(const TextProfile& latin) {
@@ -184,6 +188,8 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
     o["fontFamily"] = p.fontFamily;
     if (p.sdFontFamilyName[0] != '\0') o["sdFontFamilyName"] = p.sdFontFamilyName;
     o["publisherFonts"] = p.publisherFonts;
+    o["lookupWordMarks"] = p.lookupWordMarks;
+    o["furigana"] = p.furigana;
   }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, save manually
   if (dictionaryName[0] != '\0') {
@@ -456,6 +462,8 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
         p.fontFamily = clamp(o["fontFamily"] | p.fontFamily, BUILTIN_FONT_COUNT, (uint8_t)0);
         copyToField(p.sdFontFamilyName, o["sdFontFamilyName"] | "", sizeof(p.sdFontFamilyName));
         p.publisherFonts = (o["publisherFonts"] | 0) != 0 ? 1 : 0;
+        p.lookupWordMarks = (o["lookupWordMarks"] | 0) != 0 ? 1 : 0;
+        p.furigana = (o["furigana"] | 1) != 0 ? 1 : 0;
       }
       scriptTextProfiles[i - 1] = p;
     }
@@ -498,6 +506,7 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
       statusBarProgressBar != HIDE_PROGRESS ? static_cast<uint8_t>((statusBarProgressBarThickness + 1) * 2) : 0;
   spec.xtcMode = xtcStatusBarMode;
   spec.timeLeftMode = statusBarTimeLeft;
+  spec.charCountMode = statusBarCharCount;
   return spec;
 }
 

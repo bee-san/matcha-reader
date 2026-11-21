@@ -34,7 +34,6 @@
 #include <cstdarg>
 #include <cstring>
 
-#include "AnkiSyncStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
@@ -49,7 +48,6 @@
 #include "WifiCredentialStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
-#include "activities/flashcards/AnkiSyncActivity.h"
 #include "activities/home/StatsSyncActivity.h"
 #include "activities/reader/EpubReaderTranslationActivity.h"
 #include "activities/settings/ClockSyncActivity.h"
@@ -115,7 +113,7 @@ EpdFont cjk8RegularFont(&notosansjp_joyo_8_regular);
 EpdFontFamily cjk8FontFamily(8, &cjk8RegularFont);
 EpdFont cjk12RegularFont(&notosansjp_joyo_12_regular);
 EpdFontFamily cjk12FontFamily(12, &cjk12RegularFont);
-// IPA and stars, for flashcard pronunciations and ratings that the reader fonts lack.
+// IPA and stars, for pronunciations and ratings the reader fonts lack.
 EpdFont symbols14RegularFont(&symbols_14_regular);
 EpdFontFamily symbols14FontFamily(14, &symbols14RegularFont);
 
@@ -145,9 +143,8 @@ constexpr uint32_t SILENT_REBOOT_TARGET_SETTINGS = 3;
 constexpr uint32_t SILENT_REBOOT_TARGET_TAB = 4;
 // File Transfer > Join Network, entered through a reboot for a fresh heap (upstream's 3).
 constexpr uint32_t SILENT_REBOOT_TARGET_JOIN_NETWORK = 5;
-// Between the two services of a flashcard sync; see silentRestartToFlashcardSync().
-constexpr uint32_t SILENT_REBOOT_TARGET_FLASHCARD_SYNC = 6;
-constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_FLASHCARD_SYNC;  // bounds the setup() range check
+// 6 was the flashcard sync; above the max, a device restarted with it lands on Home.
+constexpr uint32_t SILENT_REBOOT_TARGET_MAX = SILENT_REBOOT_TARGET_JOIN_NETWORK;  // bounds the setup() range check
 // Bit in silentRebootPayload, which is a separate word from the target above -- the two
 // never share bits.
 constexpr uint32_t SILENT_REBOOT_LIGHT_ON = 1U << 0;
@@ -276,14 +273,6 @@ void silentRestartToJoinNetwork() {
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   delay(50);
   ESP.restart();
-}
-
-bool silentRestartAvailable() { return !deepSleepInProgress && wifiSessionEndsInRestart(); }
-
-void silentRestartToFlashcardSync() {
-  // First: on a touch board silentRestartTo() would end the Wi-Fi session in place instead.
-  if (!silentRestartAvailable()) return;
-  silentRestartTo(SILENT_REBOOT_TARGET_FLASHCARD_SYNC, "flashcard-sync");
 }
 
 void silentRestartToHomeTab(const int homeTab) {
@@ -818,7 +807,6 @@ void setup() {
   // from there. A missing or stale pack leaves the UI in English rather than failing the boot.
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
-  ankisync::loadSyncStores();
   OPDS_STORE.loadFromFile();
   OPDS_TOKENS.loadFromFile();
   LCP_PASSPHRASES.loadFromFile();
@@ -998,14 +986,6 @@ void setup() {
     } else {
       activityManager.goHome();
     }
-  } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_FLASHCARD_SYNC) {
-    // Restarted between the services of a flashcard sync: the rest syncs on this fresh heap. Its
-    // exit restarts into the Flashcards tab, as any sync does.
-    if (auto sync = AnkiSyncActivity::resumeAfterRestart(renderer, mappedInputManager)) {
-      activityManager.replaceActivity(std::move(sync));
-    } else {
-      HomeTabBar::activate(HomeTab::Flashcards, HomeTab::Count);
-    }
   } else if (resume == BootResume::Silent && snapshotTarget == SILENT_REBOOT_TARGET_JOIN_NETWORK) {
     // Rebooted on the way *into* File Transfer > Join Network for a fresh heap;
     // resume that flow directly instead of landing on home.
@@ -1035,11 +1015,8 @@ void setup() {
   }
 
   if (resume == BootResume::Silent) {
-    // Block until the first paint physically completes. refreshDisplay()
-    // waits on the panel BUSY pin so when this returns the user can see the
-    // new activity. Without the wait, an edge captured by gpio.update()
-    // during boot dispatches against an invisible Home and the default
-    // selectorIndex=0 opens the most-recent book.
+    // Wait for the first paint before dispatching input. A boot-time
+    // confirm edge could otherwise open the most recent book before Home is visible.
     activityManager.requestUpdateAndWait();
     // Absorb any button held at this point into currentState as a non-edge:
     // two gpio.update() calls separated by > InputManager's 5ms debounce
@@ -1126,8 +1103,19 @@ static void forceScreenRefresh() {
   }
 }
 
+// A sync shortcut pressed over a dictionary panel, held until the panel has closed.
+static uint8_t deferredSyncShortcut = CrossPointSettings::SIDE_BTN_NONE;
+
 // Runs a sync for a shortcut that carries one; false for every other action.
 static bool runSyncShortcut(const uint8_t action) {
+  const bool isSync =
+      action == CrossPointSettings::SIDE_BTN_SYNC_STATS_CLOCK || action == CrossPointSettings::SIDE_BTN_SYNC_CLOCK;
+  // The sync screen would be left under the panel's next redraw, and it releases the fonts the
+  // page behind the panel is drawn with.
+  if (isSync && activityManager.closePanelsOverPage()) {
+    deferredSyncShortcut = action;
+    return true;
+  }
   switch (action) {
     case CrossPointSettings::SIDE_BTN_SYNC_STATS_CLOCK:
       startStatsSyncFromShortcut();
@@ -1467,6 +1455,12 @@ void loop() {
     runSyncShortcut(CrossPointSettings::SIDE_BTN_SYNC_CLOCK);
   }
 
+  if (deferredSyncShortcut != CrossPointSettings::SIDE_BTN_NONE && !activityManager.closePanelsOverPage()) {
+    const uint8_t action = deferredSyncShortcut;
+    deferredSyncShortcut = CrossPointSettings::SIDE_BTN_NONE;
+    runSyncShortcut(action);
+  }
+
   // Refresh the battery icon when USB is plugged or unplugged.
   // Placed after sleep guards so we never queue a render that won't be processed.
   // Not while reading: there a repaint is a full page re-render (visible
@@ -1482,6 +1476,9 @@ void loop() {
   const unsigned long activityDuration = millis() - activityStartTime;
   // A Power + Up reader action lives for exactly one activity tick.
   mappedInputManager.clearComboAction();
+  // Time blocked in the activity (e.g. a synchronous download) is not idle
+  // time, so it is not counted toward auto-sleep.
+  lastActivityTime += activityDuration;
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

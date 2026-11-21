@@ -20,7 +20,6 @@
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
 #include "components/HeaderBackTapTarget.h"
-#include "flashcards/FlashcardsActivity.h"
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
@@ -125,7 +124,8 @@ void ActivityManager::loop() {
     return;
   }
 
-  if (currentActivity) {
+  // Radio shutdown can defer a screen change after the outgoing activity has released its resources.
+  if (currentActivity && pendingAction == PendingAction::None) {
     // Before anything below waits on the RenderLock: going home pops the reader, which blocks until
     // the render task's background work ends. Buttons alone are seen by the reader itself; the Home
     // key and touch never reach it.
@@ -345,15 +345,6 @@ void ActivityManager::goToFileTransfer() {
   auto activity = makeUniqueNoThrow<CrossPointWebServerActivity>(renderer, mappedInput);
   if (!activity) {
     LOG_ERR("ACT", "Not enough memory to open File Transfer");
-    return;
-  }
-  replaceActivity(std::move(activity));
-}
-
-void ActivityManager::goToFlashcards() {
-  auto activity = makeUniqueNoThrow<FlashcardsActivity>(renderer, mappedInput);
-  if (!activity) {
-    LOG_ERR("ACT", "OOM: flashcards activity");
     return;
   }
   replaceActivity(std::move(activity));
@@ -687,6 +678,11 @@ void ActivityManager::syncGlyphSlab() {
 
 bool ActivityManager::startShortcutSync() {
   return pendingAction == PendingAction::None && currentActivity && currentActivity->startShortcutSync();
+}
+
+bool ActivityManager::closePanelsOverPage() {
+  if (pendingAction != PendingAction::None) return true;
+  return currentActivity && currentActivity->closeOverPage();
 }
 
 bool ActivityManager::skipLoopDelay() const { return currentActivity && currentActivity->skipLoopDelay(); }

@@ -74,7 +74,6 @@ This guide covers the **CrossPoint** firmware as shipped in Matcha Reader: the b
     - [6.5 Books in Other Languages](#65-books-in-other-languages)
     - [6.6 Manga, Manhua and Comics](#66-manga-manhua-and-comics)
     - [6.7 Dictionary Files and Language Selection](#67-dictionary-files-and-language-selection)
-    - [6.8 Flashcards](#68-flashcards)
   - [7. Reading Insights](#7-reading-insights)
     - [7.1 Insights](#71-insights)
     - [7.2 Per-book Insights](#72-per-book-insights)
@@ -193,7 +192,6 @@ Home is where you start. From here you can open:
 * **Plugins** when the plugin system is on, otherwise **OPDS Browser** (online book catalogs) once a server is saved
 * **[File Transfer](#35-file-transfer-screen)**
 * **Insights** (your [reading insights](#7-reading-insights))
-* **[Flashcards](#68-flashcards)**, when **Enable Flashcards** is on in **Settings → Flashcards**
 * **[Settings](#36-settings)**
 
 In the **Cover Grid** theme, Home shows book covers instead of a menu. The book you are reading sits in a large card at the top, and the others follow below. The first time the device sees a book, it makes the cover in the background. Until a cover is ready, you see the book's title in its place. Pressing a button pauses this work. If a cover fails, the device tries again the next time you open Home.
@@ -206,7 +204,7 @@ In the **Cover Grid** theme, Home shows book covers instead of a menu. The book 
 
 #### 3.1.1 Tabs and Button Navigation (Cover Grid theme)
 
-In the Cover Grid theme, a row of tabs runs along the bottom of Home, Library, File Transfer, Insights and Settings, plus Flashcards when **Enable Flashcards** is on in **Settings → Flashcards**. It stays in place as you move between them. The tab you are on has a filled icon.
+In the Cover Grid theme, a row of tabs runs along the bottom of Home, Library, File Transfer, Insights and Settings. It stays in place as you move between them. The tab you are on has a filled icon.
 
 On a touch device, tap a tab.
 
@@ -214,11 +212,13 @@ On a device with buttons only, the cursor moves in one loop through the whole sc
 
 * **Up / Side Up** and **Down / Side Down** move the cursor around the loop.
 * **Confirm** on a top tab moves to the next one, e.g. **Books**, **Shelves** and **Files** in the Library, or the languages in Insights. After the last top tab, the cursor moves to the bottom tabs.
-* **Left** and **Right** on a top tab move to the previous or next one. In the bottom tabs, they move between Home, Library, File Transfer, Insights, Flashcards (when shown) and Settings.
+* **Left** and **Right** on a top tab move to the previous or next one. In the bottom tabs, they move between Home, Library, File Transfer, Insights and Settings.
 * **Confirm** on a bottom tab opens that screen. **Confirm** on the tab you are already on sends the cursor back to the first top tab.
 * **Back** leaves the screen. Hold **Back** to go to Home.
 
 A grey outline shows where the cursor is, whether on a cover, a row or a tab.
+
+When saved reading progress is available, Lyra shows the percentage and a progress bar below the book title and author.
 
 ### 3.2 Reading Mode
 
@@ -353,8 +353,8 @@ Some rows only appear on certain devices or while another setting is on. The not
 - **Clear Reading Cache**: Deletes the data the reader saves for each book on the SD card. Your books stay, but
   **reading progress is lost** and each book is prepared again the next time you open it.
 
-- **Display Refresh**: Flashes the screen black and white ten times to clear ghosting left by earlier pages.
-  Press **Back** to stop early; the screen always ends white.
+
+**About** shows hardware and firmware information. On EEGO Reader A4, it also shows the factory UID, matching the stock firmware. If the UID cannot be read, its value shows **Error.**
 
 - **Language**: The menu language. English, Japanese, Spanish, French and German are built in. The other languages
   in the list show **Download**: select one and the device downloads its language pack over Wi-Fi and switches to it; see
@@ -498,8 +498,8 @@ to that book only.
   - **LAYOUT**:
     - **Tategaki (vertical Japanese)**, in the **Japanese** profile, and **Zhípái (vertical Chinese)**, in the
       **Traditional Chinese** and **Simplified Chinese** profiles: whether books in that language open in vertical
-      columns. Each profile's setting applies only to its own books. Only listed when Text Settings is opened from
-      **Settings**.
+      columns. Each profile's setting applies only to its own books. A change made inside a book applies to all
+      books of that script, and also replaces that book's own choice from the **Page** panel.
       - **Automatic** (default): follows the book. A book set to read right to left opens vertically, any other
         book horizontally.
       - **On**: always vertical.
@@ -518,11 +518,29 @@ to that book only.
     - **Screen Margin**: the space around the text, 5 to 40 pixels in steps of 5 (default 5).
     - **Use Book Margins** (on by default): keeps the extra side margins a book sets, e.g. for indented quotes and
       letters. When off, those blocks line up with the rest of the text.
+    - **Furigana** (on by default, Japanese profile), called **Pinyin / Zhuyin** in the Chinese profiles: shows the
+      readings a book puts over its text. Each of the three profiles keeps its own setting. A change made inside a
+      book applies to all books of that script, and also replaces that book's own choice from the **Text** panel.
+    - **Underline Dictionary Words** (off by default, Japanese and Chinese profiles): while you pick a word to look
+      up, every word the dictionary knows gets a line under it, or beside it in vertical text. On a page the device
+      is still checking, more lines appear as it finds more words. Each of the three profiles keeps its own setting.
   - **STYLE**:
     - **Focus Reading** (off by default): prints the start of each word in bold to guide the eye, like Bionic
       Reading.
-    - **Hyphenation** (off by default): splits long words at the end of a line. With it on, Korean text may also
-      break between syllables, without a hyphen. With it off, Korean breaks only at spaces.
+    - **Hyphenation** (off by default): splits long words at the end of a line. With it on, Korean text may also break
+      between syllables, without a hyphen. With it off, Korean breaks only at spaces. English rules are built in.
+      Rules for 35 more languages can each be downloaded as a small file: Afrikaans, Albanian, Belarusian, Bulgarian,
+      Catalan, Croatian, Czech, Danish, Dutch, Estonian, Finnish, French, Galician, Georgian, German, Greek,
+      Hungarian, Icelandic, Italian, Kurdish (Kurmanji), Latin, Lithuanian, Mongolian, Norwegian, Polish, Portuguese,
+      Russian, Serbian (Cyrillic), Slovak, Slovenian, Spanish, Swedish, Turkish, Turkmen and Ukrainian. In a book in
+      one of these languages without its rules, this row reads **Download**. Select it to download the rules over
+      Wi-Fi; the book reopens with hyphenation on. The first time such a book opens with hyphenation on, a question
+      offers the same download (**Download** or **Not now**). Manage the downloads in **Settings → Reader →
+      Hyphenation Languages**, where each language shows in its own name (Deutsch, Français, Русский; Greek and
+      Georgian appear in Latin letters: Ellinika, Kartuli). Earlier versions had the French, German, Spanish, Italian,
+      Polish, Portuguese, Swedish, Finnish, Russian and Ukrainian rules built in: after updating, books in these
+      languages have no hyphenation until you download the rules, and each book's pages are laid out again the first
+      time you open it.
     - **Embedded Style** (on by default): uses the book's own formatting (its CSS).
     - **Publisher Fonts** (off by default, X4 Pro and other boards with PSRAM): draws a book in the fonts it
       ships, in horizontal and vertical text. Up to two of a book's font families are used, usually the body
@@ -535,16 +553,21 @@ to that book only.
   - The Japanese and Chinese profiles list only **Embedded Style**, **Publisher Fonts** and **Text Anti-Aliasing**
     under **STYLE**.
   - While a book is shown vertically, **LAYOUT** lists only **Line Spacing**, **Character spacing** and
-    **Screen Margin**, the settings vertical text uses.
+    **Screen Margin**, the settings vertical text uses, plus the vertical text setting, **Furigana** and
+    **Underline Dictionary Words**.
 
 - **Text profiles**: each of the five profiles keeps its own **font**, **Publisher Fonts** choice, **font size**,
-  **line spacing**, **character spacing** and **word spacing**, so a font that suits Japanese leaves your English
-  books alone. A book uses the
-  profile of its language: Japanese, traditional Chinese (Cantonese too), simplified Chinese, or Korean (a book
+  **line spacing**, **character spacing** and **word spacing** (the Japanese and Chinese profiles also their
+  vertical text setting, **Furigana** and **Underline Dictionary Words**), so a font that suits Japanese leaves your
+  English books alone. A book uses the profile of its language: Japanese, traditional Chinese (Cantonese too), simplified Chinese, or Korean (a book
   tagged `ko` or `kor`). Every other book uses **Latin & Others**. Opened from inside a book, **Text Settings** goes
   straight to that book's profile. A size or spacing you change while reading goes to the book's profile too. A font
   you pick while reading stays with that book only: change a profile's font from **Settings → Reader → Text
   Settings**.
+
+- **Hyphenation Languages**: The languages whose hyphenation rules are a download, with **Download** or
+  **Installed**. Select a language to download its rules over Wi-Fi, or an installed one to remove them. The rules
+  are saved in `/.crosspoint/hyph/` on the SD card and keep working after firmware updates.
 
 - **Dictionary Settings**: Opens a page with the word lookup settings:
   - **Word Lookup Font Size**: Text size in the word lookup window: **Tiny**, **Small** (default), **Medium** or
@@ -555,6 +578,8 @@ to that book only.
   - **Fallback for other languages**: The StarDict dictionary for word lookups, or **None**. Lookups use a dictionary
     that matches the book's language first, then this one. Only shown when a dictionary folder exists under
     `/dictionaries/` or `/.dictionaries/` on the SD card. See [docs/dictionary.md](docs/dictionary.md).
+  - **Mining**: **Sentence cards** (default) saves a word once per sentence. **Word cards** saves a word only once.
+    See [Sentence mining](#sentence-mining).
 - **Plugins** (**Settings → Connectivity**): Enable or disable SD-card plugins. Clean installs start disabled; upgrades with existing plugins are kept enabled automatically. Disabling plugins leaves all plugin files on the SD card but stops plugin discovery and execution until they are enabled again.
   - Enabling plugins immediately adds **Plugins** to the Home screen, even when no plugins are installed yet. Sideloaded SD-card plugins work without Plugin Hub.
   - Open **Home → Plugins** to view installed plugins. Hold **Confirm** on a selected installed plugin for one second (or long-press its row on a touch device) to open an uninstall confirmation. Confirming deletes that plugin's installed folder and files; cancelling leaves it installed. If no usable on-device Plugin Hub is available and its installer has not been hidden, a **Plugin Hub — Download, discover, and update plugins** entry is also shown. A manually sideloaded Hub with a valid `device.json` is recognized without requiring the optional README or browser files.
@@ -569,7 +594,7 @@ to that book only.
   - **Portrait 180°**: upside down.
   - **Landscape CCW**: turned a quarter counter-clockwise.
 
-  The **Vertical Text** switch in a book's Reader Settings overrides this for that book.
+  The **Vertical Text** choice in a book's **Page** panel overrides this for that book.
 
 - **Rotate Panels** (on by default): In manga, turns a panel sideways when that makes it fit the screen better.
 
@@ -586,6 +611,7 @@ to that book only.
   time: chapter page count, book progress percentage, progress bar (book, chapter or hidden) and its thickness, title,
   battery, the status bar for XTC files, and the clock when the device knows the time.
   - **Time Left**: an estimate of the reading time left in the chapter or the book (default: hidden). It is shown before the page count, e.g. "12 min". It learns from how long you stay on each page as you turn forward, ignoring pages you skip past in under 2 seconds or leave open for more than 30 minutes. A page left open much longer than your usual pace counts as about three times your average. Each book keeps its own reading speed, measured against how much of the book's text you get through, so it stays right when you change the font size or margins. The estimate appears once about five pages have been timed.
+  - **Character Count**: the characters you have read out of the total, for the chapter or for the book (default: hidden). It is shown before the time left, e.g. "1240/8900". Furigana and spaces are not counted. Numbers from 10,000 up are shortened, e.g. "45k/312k". The count appears once the chapter on screen has been laid out to its end. A chapter that has not been opened yet is estimated from its file size, and the count then starts with "~", e.g. "~45k/312k"; it becomes exact as you read through the book.
 
 #### 3.6.7 Controls
 
@@ -745,21 +771,7 @@ The rows are grouped by the control they change. Each one is described further d
 
 - **CrossPoint Sync**: Sync your reading position with the CrossPoint sync server or any KOReader-compatible sync server. See [KOReader Sync Quick Setup](#3611-koreader-sync-quick-setup) below.
 
-- **Flashcards Sync**: Sync Anki and Migaku decks and their review progress with a self-hosted [companion server](#the-companion-server) or, for Anki, Anki desktop (with AnkiConnect). Sync is optional. Under **Sync Server**, **Use Sync Server** turns on the companion server both services share; its **Server Address** and **Server Key** show while it is on. **Test Connection** checks each service that is on. **Anki Server** is **Off**, **Sync Server** or **Anki Desktop**, which adds **Anki Desktop Address** and **Anki Desktop Key**. **Migaku Server** is **Off** or **Sync Server**: Migaku syncs only through the companion server, so its rows are hidden while **Use Sync Server** is off. Turning **Use Sync Server** off also turns off a service that used it. A service that is on shows its decks (**Anki Decks**, **Migaku Decks**: deck names separated by commas, as the service shows them). With both on, **Mined Words To** chooses where mined words go. These rows are also on the web settings page, except **Test Connection**; there every row shows. Every sync also asks the server to sync with AnkiWeb when it has a login. See [Anki decks](#anki-decks) and [Migaku decks](#migaku-decks).
-
 - **OPDS Servers**: Save online book catalogs (OPDS libraries) so you can browse them and download books straight to the device. See [OPDS Servers (Multiple Libraries)](#369-opds-servers-multiple-libraries) below. ([What is OPDS?](https://en.wikipedia.org/wiki/Open_Publication_Distribution_System))
-
-#### Flashcards settings
-
-**Settings → Flashcards** sets how [Flashcards](#68-flashcards) schedules your cards:
-
-- **Enable Flashcards** (off by default): adds Flashcards to Home and to the bottom tabs. **Open Flashcards**, just below it, opens it from here either way.
-- **Desired Retention**: how sure you want to be to still know a card when it comes back: **80%**, **85%**, **90%** (default) or **95%**. Higher means shorter gaps and more reviews.
-- **New Cards per Day**: **5**, **10**, **20**, **30** or **50** new cards per deck each day.
-- **Maximum Interval**: the longest gap before a card comes back: **1 month**, **6 months**, **1 year** or **No limit**.
-- **Vacation Mode**: pauses reviews. While it is on, nothing comes due, no new cards are added and the overview says **On vacation**. When you turn it off, every due date moves forward by the days you were away, so the reviews do not pile up. The device needs the clock to be set to count those days; until then it waits.
-
-An Anki deck uses its own preset in Anki for **New Cards per Day**, **Desired Retention** and **Maximum Interval**, and also its daily review limit, its learning and relearning steps, the order of new cards and reviews (by due date, random or by interval; new cards before, after or mixed with the reviews), burying of sibling cards, Easy Days and its leech rule, once a sync has read them. If the preset uses an order the device does not have, the device uses its own: most overdue first, and new cards in the order they were added. Easy Days moves a card to a lighter weekday within a few days of its date; unlike Anki, it does not look at how many cards are already due on each day. The settings above are used for your own decks, and for an Anki deck when the sync cannot read its preset. **Vacation Mode** applies to all decks.
 
 #### 3.6.9 OPDS Servers (Multiple Libraries)
 
@@ -1141,7 +1153,7 @@ The panel uses the same buttons as the dictionary panels (see [6.1](#61-word-loo
 You can look up words with an offline dictionary on the SD card. To set it up:
 
 1. Copy a StarDict dictionary into the `/dictionaries/` folder (or `/.dictionaries/`, see [6.7](#67-dictionary-files-and-language-selection)).
-2. Select it in **Settings → Reader → Dictionary Settings → Fallback for other languages**. Inside a book, the same row in **Reader Settings** is called **Dictionary**.
+2. Select it in **Settings → Reader → Dictionary Settings → Fallback for other languages**. Inside a book, **Reader Settings → Dictionary Settings** shows a read-only **Dictionary** row with the dictionary that book uses.
 
 To look up a word with the buttons, choose **Look Up** in the **[Reader Menu](#5-reader-menu)**. Use **Left** and **Right** to highlight a word, then press **Confirm** to see its definition. On button-only devices you can also start a lookup by holding **Confirm**, if **Menu long press** in **Settings → Controls → Front buttons** is set to **Dictionary**.
 
@@ -1212,7 +1224,7 @@ The menu shows these entries, top to bottom. Some only appear when they apply to
 * **Progress row:** drag the knob or tap the line to jump through the book; the buttons at either end go to the previous or next chapter.
 * **Chapter line:** the chapter, the page and the book percentage, and a bookmark you tap to mark or unmark the page.
 * **Contents** lists the chapters. **Translate** translates the page straight away. **More** lists everything else from the full menu.
-* **Text:** the font size (the small and large A step it down and up), the font, **Focus Reading**, and **More text settings** for the full list (word spacing, hyphenation, indents and more). Japanese and Chinese books show **Furigana** (**Pinyin** in Chinese books) instead of Focus Reading.
+* **Text:** the font size (the small and large A step it down and up), the font, **Focus Reading**, and **More text settings** for the full list (word spacing, hyphenation, indents and more). Japanese and Chinese books show **Furigana** (**Pinyin / Zhuyin** in Chinese books) instead of Focus Reading.
 * **Page:** line spacing, margins, alignment and orientation as small page pictures: tap one to choose it. Japanese and Chinese books get **Vertical Text** (lines or columns) instead of alignment.
 
 With buttons, Left and Right move between the dock's controls and Select uses one. In the Text and Page panels, Up and Down choose a row, and Left and Right change it one step at a time, which reaches every value, not just the ones the pictures show. On the Text panel's Font and More text settings rows, Left and Right switch to the next panel instead; on the Page panel, go back to the dock to change panel. Back steps from a panel to the dock, and from the dock to the page.
@@ -1373,7 +1385,9 @@ shows one entry so stepping stays quick.
 
 **Settings**
 
-- **Reader Settings → Word Lookup Font Size**: **Tiny**, **Small** (default), **Medium** or **Large**.
+- **Reader Settings → Dictionary Settings → Word Lookup Font Size**: **Tiny**, **Small** (default), **Medium** or **Large**.
+- **Reader Settings → Text Settings → LAYOUT → Underline Dictionary Words** (off by default, Japanese and Chinese
+  profiles): a line under every word the dictionary knows (beside it in vertical text) while you pick a word.
 
 #### Sentence mining
 
@@ -1394,6 +1408,11 @@ written, you see **Could not save**.
 Each word is saved once per sentence. Saving the same word from the same sentence again adds nothing, even days
 later. The same word in a different sentence makes a new card.
 
+If you study the word alone and want one card per word, set **Settings → Reader → Dictionary Settings → Mining**
+to **Word cards**. A word that is already in the file is then not saved again, whatever sentence it is in. The
+reader checks the file on the SD card, so a word comes back if you delete its row or the file. **Sentence cards** is
+the default.
+
 **Where the cards go:** the **sentence-mining** folder on the SD card, with one file per language, e.g.
 `sentences-ja.csv`, `sentences-zh.csv`, `sentences-yue.csv` or `sentences-en.csv`. That way each language can go
 into its own Anki deck. Each card holds:
@@ -1413,20 +1432,6 @@ into its own Anki deck. Each card holds:
 A sentence cut off at the bottom of the page is completed from the next page. In manga, the sentence is the text of
 the speech bubble the word is in.
 
-**Sending to Anki with sync**
-
-If you sync with Anki (see [Anki decks](#anki-decks)), **Sync Flashcards** sends your mined words to Anki for you:
-
-- Words not yet in Anki become notes of the **Matcha sentence** note type, in one deck per language: **Matcha::日本語**, **Matcha::Deutsch** and so on. The note type and the decks are made in Anki when they are missing, and the decks are added to **Anki Decks**.
-- Each word leaves the device's own deck and comes back as a card of that Anki deck, with its review history. Its progress goes with it, so Anki shows the same next review as the device.
-- A word already in Anki as a **Matcha sentence** note with the same word and sentence (for example from an earlier import by hand) is reused, not added again. Its schedule in Anki is kept.
-- Words you mine later stay in the device's own deck until the next sync.
-- You can rename the deck in Anki: the device follows it.
-
-With **Mined Words To** set to **Migaku**, or with only Migaku on, the words go to Migaku instead and Anki gets none. See [Migaku decks](#migaku-decks).
-
-A word that Anki does not take (for example one too large to send) stays on the device and is tried again at the next sync. It never stops your other decks from syncing.
-
 **Importing into Anki by hand**
 
 1. Copy the CSV file to your computer.
@@ -1437,11 +1442,10 @@ more words. You can import the same file again later: Anki updates the cards it 
 ones.
 
 To show the Furigana column as ruby in Anki, add a Furigana field to your note type and put `{{furigana:Furigana}}`
-on the card template. A ready-made note type that looks like the device's flashcards is in
+on the card template. A ready-made note type for these cards is in
 [docs/anki](docs/anki/README.md).
 
-Files saved before the Furigana column existed are updated the next time you save a word or open the deck under
-Flashcards: an empty Furigana field is added to every row and the header is rewritten. Import the updated file
+Files saved before the Furigana column existed are updated the next time you save a word: an empty Furigana field is added to every row and the header is rewritten. Import the updated file
 into Anki as usual, and map the new column to your Furigana field (or ignore it).
 
 The file is plain CSV, so a spreadsheet or another flashcard app can open it too.
@@ -1523,14 +1527,16 @@ Page Translation uses). Gemini reads each word in its sentence, which is needed 
 on the word around it. Furigana the book already has stays as it is. A reading is added only when it fits the word
 as written (in 食べる, た goes over 食 and べる stays bare). Words that do not fit are left without furigana.
 
-**Switches.** For a Japanese book, **Reader Settings** has a **Vertical Text** and a **Furigana** switch. Open
-Reader Settings from the reader menu. Your choice is saved for that book and applies when you return to it.
+**Switches.** **Tategaki (vertical Japanese)** and **Furigana** are in **Settings → Reader → Text Settings →
+Japanese**, for all Japanese books. Inside a book, **Reader Settings → Text Settings** opens the same page. To change
+one book only, use **Vertical Text** in the reader toolbar's **Page** panel and **Furigana** in its **Text** panel
+(set **Reader Settings → Reader Menu Style** to **Toolbar**, see [§5](#5-reader-menu)). That choice is saved with
+the book.
 
 <p align="center">
-  <img src="docs/images/screenshots/reader-settings.png" width="260" alt="Reader settings showing the vertical text and furigana toggles">
   <img src="docs/images/screenshots/vertical-text-furigana.png" width="260" alt="Vertical text with furigana beside the kanji">
 </p>
-<p align="center"><em>The switches, and furigana beside the kanji where the book has them</em></p>
+<p align="center"><em>Furigana beside the kanji where the book has them</em></p>
 
 **Word Lookup in Japanese** (see 6.1):
 
@@ -1632,8 +1638,9 @@ Useful options:
   are likely to need get a reading.
 
 You need Python and the CC-CEDICT file ([docs/dictionary-setup.md](docs/dictionary-setup.md)). Copy the new EPUB to
-the card and open it. **Reader Settings → Pinyin / Zhuyin** shows or hides the readings and is saved per book. It
-is the same switch Japanese books call **Furigana**.
+the card and open it. **Pinyin / Zhuyin** in **Settings → Reader → Text Settings → Traditional Chinese** or
+**Simplified Chinese** shows or hides the readings for all books of that script. The **Text** panel of the reader
+toolbar (**Reader Menu Style** set to **Toolbar**) does it for one book. It is the same setting Japanese books call **Furigana**.
 
 **Why `--ai` helps.** Without it, readings come from the dictionary. Many characters have more than one reading,
 and a character on its own gets the first one listed, which is often wrong (石 comes out as *dàn* instead of
@@ -1649,8 +1656,8 @@ per thousand characters, so a whole novel is a long run.
 The layout follows the publisher. A book set to read right to left (common for novels from Taiwan) opens in
 vertical columns. Every other Chinese book opens horizontally. To open Chinese books one way, set **Zhípái (vertical Chinese)**
 in **Settings → Reader → Text Settings → Traditional Chinese** for Traditional Chinese books, or **Simplified
-Chinese** for Simplified ones, to **On** or **Off**. The **Vertical Text** switch in a book's **Reader
-Settings** overrides both and is saved per book.
+Chinese** for Simplified ones, to **On** or **Off**. **Vertical Text** in the reader toolbar's **Page** panel
+(**Reader Menu Style** set to **Toolbar**) overrides it for one book and is saved with that book.
 
 #### Fonts and the Interface
 
@@ -1923,7 +1930,7 @@ for searching.
 </p>
 
 **Settings → Reader → Dictionary Settings → Fallback for other languages** is used when a book has no language tag, or when no folder under
-`dictionaries/` matches its language. Inside a book, the reader settings show a **Dictionary** row with the
+`dictionaries/` matches its language. Inside a book, **Reader Settings → Dictionary Settings** shows a **Dictionary** row with the
 dictionary that book uses first. Use it to check that the book's language tag was recognised.
 
 You can also name the folder `.dictionaries/`, which hides it from the file browser. Everything above works the
@@ -1933,107 +1940,6 @@ the copy in `.dictionaries/` wins.
 Older setups still work. A dictionary folder placed directly under `dictionaries/`, outside a language folder, can
 still be chosen as the fallback dictionary. Japanese files in the old `dict/` folder are still found.
 
-
-### 6.8 Flashcards
-
-Flashcards turns the words you save with [sentence mining](#sentence-mining) into cards you can review on the device. Each language's `sentences-<lang>.csv` is one deck. Reviews are scheduled with FSRS, the scheduler Anki uses, so a card comes back just before you would forget it. Your progress is kept in the device's system folder; the CSV files are not changed by reviewing.
-
-**Opening it:** turn on **Enable Flashcards** in [Settings → Flashcards](#flashcards-settings). Flashcards then appears on Home and in the bottom tabs.
-
-**The overview** shows how many cards are waiting today, then one row per deck with its count. Decks are named in their own language (日本語, 中文, Deutsch…). Korean and Cantonese use the name in your device language, because the menu font has no Hangul and no 粵. Choose a deck to start. A deck with nothing due cannot be opened. When nothing is due anywhere, the overview says **Nothing due today** (or **On vacation**).
-
-**A card:**
-
-- **Front:** the word on the card's spine and the sentence you saved it from, with the word in bold, and the book's title at the bottom. Japanese cards are set vertically, in columns from right to left, with the spine on the right.
-- **Turn** (**Confirm**, a side button, or **Tap to turn**) shows the back: the reading, the definition and the sentence again. On a Japanese card the reading stands beside each kanji on the spine, like furigana. It uses the card's Furigana column when there is one; otherwise it is placed from the word's kana.
-- **Rate** with **Again**, **Hard**, **Good** or **Easy**. Each box shows when the card would come back. **Left** and **Right** choose a box and **Confirm** rates; on a touch device, tap a box. A side button turns the card back to the front. A new card, or one you rated **Again**, goes through short learning steps: 10 minutes on your own decks, the deck's own steps on an Anki deck (a deck without steps gives a day interval at once). It comes back in the same session once its step has passed, ahead of the cards you have not seen yet. When only such cards are left, the next one is shown straight away. If you leave the deck, a card between steps keeps its step and its time, and comes back first once that time has passed.
-
-When the deck is done, the screen says **All caught up** with the number of cards reviewed; **Confirm** or a tap closes it. **Back** leaves at any time; your progress is saved.
-
-#### Anki decks
-
-Anki decks are listed in the overview next to your own decks. Each card is drawn with its deck's own template and style, and is rated the same way. Card text uses your reader font and size: the deck's base text size becomes your reader size, and every other size keeps its proportion to it, from three quarters to one and a quarter of it. The deck's left and right margins are kept, up to twice the text size. A long side is paged with the side buttons before the card turns. A very long side is cut off after a number of pages; review the rest in Anki. A card whose content is too large for the device says so; review that card in Anki.
-
-There are two ways to get a deck onto the device:
-
-- **Import, without sync:** open an exported `.apkg` in the [Anki Converter](https://eszter007.github.io/matcha-reader-tools/anki.html) of Matcha Reader Tools, in your browser, and copy the result to the SD card (or use `tools/anki_import/apkg_to_flashcards.py` on a computer with Python). Progress then stays on the device and does not go back to Anki. To keep Anki up to date, use sync instead (see [Offline reviews, synced with Anki on your computer](#offline-reviews-synced-with-anki-on-your-computer)).
-- **Sync:** set up [Flashcards Sync](#368-connectivity), then choose **Sync Flashcards** at the bottom of the overview. It turns Wi-Fi on, downloads the chosen decks, and sends reviews both ways. Later syncs download only new and changed cards. To stop a sync, press **Back** (on a touch device, tap the back arrow or swipe from the left edge); it stops after the current card and keeps the cards synced so far. If a sync stops partway, the next one continues near where it stopped. A card too large for the device is downloaded again only after it is changed in Anki. Images are downloaded with their cards. The companion server shrinks large images to screen size first. An image still over 1 MB (4 MB with PSRAM) is not kept; an image that fails for another reason is tried again at the next sync. A type-in answer shows no typing box. With the companion server, the back shows the expected answer; with Anki desktop, the box is left out. If a card does not fit in the memory left during a sync, it is left for the next sync. When a card template or a style changes in Anki, the next sync downloads the deck's cards again. After a deck has synced once, renaming it in Anki is fine: the device finds it again and shows the new name in **Anki Decks**. If a deck in **Anki Decks** is not in Anki, the sync still syncs the other decks, then shows an error with the name of the first missing deck. Reviews of a card you deleted in Anki are not sent; the rest of the deck syncs as usual.
-
-A deck holds up to 2,000 cards on the device (10,000 on the X4 Pro and other devices with PSRAM, which also fit larger cards); a larger deck is cut there. Cards suspended in Anki are left off the device, and come back with their progress when you unsuspend them. Cards buried in Anki are not shown on the day of the sync. A card you forget many times (a "leech": as many times as the deck's leech threshold in Anki) is tagged "leech" in Anki at the next sync. If the deck's preset says to suspend leeches, the device stops showing it at once and the sync suspends it in Anki.
-
-##### The companion server
-
-Anki desktop must be open on your computer for a sync. If you would rather sync at any time, run the companion server, [matcha-anki-server](https://github.com/eszter007/matcha-anki-server), on a computer that is always on: a NAS, a Raspberry Pi, a home server, or a small cloud server. It keeps your Anki collection, syncs it with AnkiWeb, and answers the reader the way Anki desktop does.
-
-It also prepares cards for the reader: large images are shrunk to grayscale, and buttons, scripts and hidden menus are left out, so cards are smaller and sync faster. Type-in cards show the expected answer on the back.
-
-**Set it up** (full steps in the server's README):
-
-1. Install Docker on the computer that will run it.
-2. Download the server from GitHub and make a `.env` file with a key of your choice (`MATCHA_TOKEN`, at least 16 random characters) and, if you want your AnkiWeb collection, your AnkiWeb login.
-3. Start it with `docker compose up -d`. It listens on port 8080.
-
-**Google Cloud:** the README also explains how to run it on a free-tier Google Cloud server with HTTPS, step by step with the `gcloud` command line tool. The key and your AnkiWeb login are kept in Google's Secret Manager there, not in a file.
-
-**On the reader** (Settings → Connectivity → Flashcards Sync, or the web settings page):
-
-- **Use Sync Server:** **On**.
-- **Server Address:** `http://<the computer's address>:8080` at home, or the `https://` address of a cloud server.
-- **Server Key:** the key from step 2.
-- **Anki Server:** **Sync Server**.
-
-Each sync also asks the server to sync with AnkiWeb, before and after the device's own sync, so reviews from your phone and the device meet. A server without an AnkiWeb login skips that. When AnkiWeb and the server cannot be merged (a full sync), the companion server takes AnkiWeb's copy on its own and adds back the reviews and words from the device it had not sent yet. With Anki desktop, Anki asks you which copy to keep: the device then stops before it sends anything and says so; choose in Anki, then sync again. If AnkiWeb cannot sync for another reason, for example while it is down, the device still syncs with the server and says AnkiWeb was not synced; the next sync tries again.
-
-Over the internet, use HTTPS so the key is not sent in the clear. HTTPS needs more memory on the reader: the X4 may not have enough during a sync, so on an X4 a server on your home network is the safer choice.
-
-The companion server is free for non-commercial use under the [CC BY-NC-SA 4.0](https://github.com/eszter007/matcha-anki-server/blob/main/LICENSE) licence: you may use, change and share it with credit, and changed versions must be shared under the same licence. For commercial use, ask first. The Anki library it uses keeps its own licence (AGPL-3.0).
-
-##### Migaku decks
-
-The [companion server](#the-companion-server) can also bring your [Migaku](https://migaku.com) decks to the device, next to your Anki decks or instead of them. The server signs in to Migaku with your account's email and password; an account that signs in only with Google or Apple does not work. See the [server's README](https://github.com/eszter007/matcha-anki-server) for its two settings. The server uses Migaku's own app protocol, which Migaku does not document, so a Migaku update can stop it working until the server is updated. On the reader (Settings → Connectivity → **Flashcards Sync**; the web settings page has the same rows except **Test Connection**):
-
-- **Migaku Server:** **Sync Server**, with **Use Sync Server** on and the companion server's address and key under it. If Anki uses Anki desktop instead, set **Anki Server** to **Anki Desktop** with Anki desktop's address. For Migaku only, set **Anki Server** to **Off**.
-- **Migaku Decks:** the decks to sync, separated by commas. Migaku decks are named with their language first, for example `French::My Cards` or `Japanese::Animals`.
-- **Mined Words To:** **Migaku** sends your mined words to Migaku instead of Anki. With only Migaku on, they go to Migaku anyway.
-- **Test Connection** checks the address and the key of each service that is on. The Migaku login is checked by the next sync.
-
-With Anki or Migaku set up, the last row of the Flashcards overview is **Sync Flashcards**. The title of the sync screen shows what it syncs: **Sync with Anki**, **Sync with Migaku**, or **Sync with Anki and Migaku** when both are set up. With both, Anki syncs first, then Migaku. On a reader without a touch screen it restarts between them (a short **Loading** screen), because after one sync there is not enough memory left for the second. If one fails, the other still syncs; the result shows both and names the first one that failed.
-
-- Each Migaku card shows Migaku's front. The back reads like a dictionary entry: the word with its pronunciation, word class and frequency stars when Migaku has them, the meaning, the sentence with its translation, the first image and the notes. Japanese and Chinese get furigana. Sound is left out. Course cards show only the word and its reading. A card too large for the device says to review it in Migaku.
-- Cards are due on the device when they are due in Migaku. Your reviews go to Migaku as Migaku reviews: **Again** counts as fail, **Hard**, **Good** and **Easy** as pass, and Migaku works out the next due date. The device keeps its own schedule for its next reviews, as with Anki.
-- Mined words become cards of Migaku's Sentence type, in one deck per language named like the device's (**Matcha::Français** and so on), made in Migaku when missing. Migaku can only make that deck in a language you have already used in Migaku once.
-- Nothing is ever deleted in Migaku by a sync. Migaku decks and Anki decks never mix on the device, even when they have the same name; the overview adds **(Migaku)** to a Migaku deck named like another deck.
-
-##### Offline reviews, synced with Anki on your computer
-
-You do not need AnkiWeb or any cloud service. The device can sync directly with Anki on your computer over your home Wi-Fi. You review offline on the device, wherever you are, and sync when you are back home. Nothing leaves your network.
-
-**Once, on the computer:**
-
-1. Install [Anki desktop](https://apps.ankiweb.net) 26.08 or later.
-2. Install the [AnkiConnect add-on](https://ankiweb.net/shared/info/2055492159): in Anki, choose **Tools → Add-ons → Get Add-ons…**, enter the code `2055492159` and choose **OK**. Restart Anki when it asks. AnkiConnect then shows in the **Add-ons** list.
-3. In that list, select **AnkiConnect** and choose **Config**. In the text that opens, change `"webBindAddress": "127.0.0.1"` to `"webBindAddress": "0.0.0.0"`, so the device can reach Anki on your Wi-Fi (with `127.0.0.1` only programs on the computer itself can). We recommend also setting `"apiKey"` to a password you choose, in quotes. Choose **OK**, then restart Anki.
-4. Find your computer's address on the Wi-Fi network, for example `192.168.1.20` (on a Mac: **System Settings → Wi-Fi → Details**; on Windows: `ipconfig`).
-5. If the computer asks whether Anki may accept incoming network connections, allow it.
-
-**Once, on the device** (easier on the web settings page in **File Transfer**):
-
-1. **Settings → Connectivity → Flashcards Sync → Anki Server:** **Anki Desktop**. Then **Anki Desktop Address:** `http://` + your computer's address + `:8765`, for example `http://192.168.1.20:8765`. (Without Migaku, **Use Sync Server** can be turned off.)
-2. **Anki Desktop Key:** the `apiKey` you chose, or empty if you set none.
-3. **Anki Decks:** the decks to review, separated by commas, as Anki shows them (a subdeck is `Parent::Child`).
-4. **Test Connection** checks the address, the key and the Anki version.
-
-If Anki on the computer is signed in to AnkiWeb, each sync also asks it to sync with AnkiWeb. If you do not use AnkiWeb, nothing changes.
-
-**Each time:**
-
-1. Open Anki on your computer. The device is on the same Wi-Fi.
-2. On the device, choose **Flashcards → Sync Flashcards**. New and changed cards come to the device. Your reviews from the device go to Anki with their real time. Anki also gets each card's next due date and interval and, if FSRS is on in Anki, the card's memory (stability and difficulty). Reviews you did in Anki come to the device.
-3. Review offline on the device. Your ratings are kept on the device until the next sync, however long that takes.
-
-If you review the same card in Anki and on the device between two syncs, both reviews are kept in the card's history.
-
-The commands and the server setup are in [docs/anki](docs/anki/README.md#anki-decks-on-the-reader).
 
 ## 7. Reading Insights
 

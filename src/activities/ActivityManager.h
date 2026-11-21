@@ -30,7 +30,6 @@ enum class HomeMenuItem {
   OPDS_BROWSER,
   FILE_TRANSFER,
   READING_STATS,
-  FLASHCARDS,
   SETTINGS_MENU
 };
 
@@ -121,7 +120,6 @@ class ActivityManager {
   // goTo... functions are convenient wrapper for replaceActivity()
   void goToFileTransfer();
   void goToReadingStats();
-  void goToFlashcards();
   void goToJoinNetwork();  // File Transfer straight into Join Network (post heap-defrag reboot)
   void goToUsbDrive();
   // openSection jumps straight into one group (End = the section list).
@@ -178,6 +176,9 @@ class ActivityManager {
   // that draws outside it (the reader's panels) calls it itself.
   void syncGlyphSlab();
   bool startShortcutSync();
+  // Closes a dictionary panel over a page (Activity::closeOverPage). True while one is closing
+  // or any other screen change is under way: the caller waits and asks again.
+  bool closePanelsOverPage();
   bool skipLoopDelay() const;
   ScreenshotInfo getScreenshotInfo() const;
   void prepareForSleep();

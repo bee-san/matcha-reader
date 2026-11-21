@@ -167,7 +167,7 @@ class EpubReaderActivity final : public ReaderActivity {
   bool recentsEntryRemoved = false;
   // Per-book vertical text override: -1 = auto (detect from language), 0 = off, 1 = on
   int8_t verticalOverride = -1;
-  // Per-book furigana override: -1 = auto (on by default), 0 = off, 1 = on
+  // Per-book furigana override: -1 = follow the text profile, 0 = off, 1 = on
   int8_t furiganaOverride = -1;
   // Per-book language (cjk::LanguageChoice): LANG_AUTO follows the tag, else the user's pick for a
   // mis-tagged book. Kept with the sniff result in the book's language.bin.
@@ -507,7 +507,9 @@ class EpubReaderActivity final : public ReaderActivity {
   std::atomic<int> earlyDisplayedPage_{-1};
   bool earlyPageActuallyDisplayed_ = false;
   void silentIndexNextChapterIfNeeded(uint16_t viewportWidth, uint16_t viewportHeight);
-  bool saveProgress(int spineIndex, int currentPage, int pageCount, int8_t vertOverride, int8_t furiOverride);
+  // fallbackOffset: the content offset to record when the page has no layout to read one from.
+  bool saveProgress(int spineIndex, int currentPage, int pageCount, int8_t vertOverride, int8_t furiOverride,
+                    std::optional<uint32_t> fallbackOffset = std::nullopt);
   // Pages laid out per incremental-build pump: on the render path (catching up to the page
   // being shown) and per loop() tick (background build of a large chapter). Kept small so a
   // background build chunk never noticeably delays input or a pending render.
@@ -662,6 +664,7 @@ class EpubReaderActivity final : public ReaderActivity {
   void jumpToPercent(int percent) override;
   bool writeSyncedPosition() override;
   int syncedPositionPercent() override;
+  bool offerHyphenationPack() override;
   // The book position an Insights-synced position maps to, and its percent here; false when the book has
   // none, or has been read past it here (then it is dismissed).
   bool mapSyncedPosition(CrossPointPosition& out, int& percent);
@@ -894,6 +897,23 @@ class EpubReaderActivity final : public ReaderActivity {
   mutable bool chapterSpanBuildActive = false;
   mutable int chapterPagesBefore = 0;
   mutable int chapterPagesTotal = 0;
+  // Counted characters per spine file from its cached layout, 0 = not known. Filled only
+  // while the status bar shows the character count.
+  mutable std::vector<uint32_t> spineCharsReal;
+  // Characters in the files ahead of the one on screen and in all files, for the ToC chapter and
+  // for the book. A file with no known count is scaled from its size, which marks it estimated.
+  struct CharTotals {
+    uint32_t chapterBefore = 0;
+    uint32_t chapterTotal = 0;
+    uint32_t bookBefore = 0;
+    uint32_t bookTotal = 0;
+    bool chapterEstimated = false;
+    bool bookEstimated = false;
+    bool valid = false;
+  };
+  mutable CharTotals charTotals;
+  mutable bool chapterSpanChars = false;  // part of the memo key: the count was wanted
+  CharCount statusBarCharCount(uint8_t mode) const;
   mutable float chapterEndProgress = 1.0f;            // book progress (0-1) where the ToC chapter on screen ends
   mutable std::vector<uint16_t> spinePagesReal;       // 0 = not indexed yet
   mutable std::vector<uint16_t> spinePagesEffective;  // real or byte-estimated, never 0
@@ -951,6 +971,16 @@ class EpubReaderActivity final : public ReaderActivity {
   bool showVerticalToggle() const;
   bool hideGenericLookup() const;
   void applyVerticalFuriganaOverride(int8_t verticalOverrideIn, int8_t furiganaOverrideIn);
+  // The vertical-text setting of the book's script (Tategaki or Zhipai), what a book with no
+  // choice of its own follows.
+  uint8_t profileVerticalMode() const;
+  // Around Text Settings: a vertical text or furigana value changed there applies to this book
+  // too, so the book's own choice for that value is dropped.
+  void rememberTextProfile();
+  void followTextProfileChanges();
+  uint8_t verticalModeBefore_ = 0;
+  uint8_t furiganaBefore_ = 1;
+  bool textProfileVisitOpen_ = false;
   // The language the book is read as: the override, else the EPUB tag when it names a CJK
   // language, else what the content sniff found, else the tag as written (possibly empty).
   std::string effectiveLanguage() const;

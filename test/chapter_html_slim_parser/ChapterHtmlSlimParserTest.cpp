@@ -742,27 +742,6 @@ TEST_F(DropCapTest, ScalesABlockFontSizeTheLadderCannotServe) {
   EXPECT_TRUE(bodyFonts.empty() || bodyFonts[0] == 0) << "the heading's scale must not leak past it";
 }
 
-// On a flashcard, px sizes are multiples of the card base: a 20px reading inside a 40px word is
-// back at the base, not 1.25 x 1.0 of it.
-TEST_F(DropCapTest, CardPixelSizesDoNotCompoundInsideASizedParent) {
-  makeParser(".w { font-size: 40px; }\n.r { font-size: 20px; }\n");
-  parser->setCardFontBase(20.0f);
-  parser->insideBody = true;
-  openParagraph();
-  const XML_Char* word[] = {"class", "w", nullptr};
-  const XML_Char* reading[] = {"class", "r", nullptr};
-  ChapterHtmlSlimParser::startElement(parser.get(), "span", word);
-  feedWord("serre");
-  ChapterHtmlSlimParser::startElement(parser.get(), "span", reading);
-  feedWord("ser");
-  ChapterHtmlSlimParser::endElement(parser.get(), "span");
-  ChapterHtmlSlimParser::endElement(parser.get(), "span");
-
-  ASSERT_GE(parser->currentTextBlock->wordFonts.size(), 2u);
-  EXPECT_EQ(parser->currentTextBlock->wordFonts[0], -320) << "the word is capped at 1.25 of the base";
-  EXPECT_EQ(parser->currentTextBlock->wordFonts[1], 0) << "the reading is at the base";
-}
-
 TEST_F(DropCapTest, TheLetterLeavesTheTextFlow) {
   makeParser("p::first-letter { font-size: 300%; }\n");
   openParagraph();
@@ -1008,6 +987,30 @@ TEST_F(ChapterHtmlSlimParserTest, UppercaseHiddenAttributeIsAlsoSkipped) {
 
   ASSERT_EQ(parser.partWordBufferIndex, 0);
   EXPECT_EQ(parser.visibleTextOffset, 0u);
+}
+
+// The status bar's character count leaves out furigana and whitespace, while the reading
+// position still counts both.
+TEST_F(ChapterHtmlSlimParserTest, ReadableCountSkipsFuriganaAndWhitespace) {
+  parser.beginParse();
+  parser.insideBody = true;
+
+  ChapterHtmlSlimParser::startElement(&parser, "p", nullptr);
+  ChapterHtmlSlimParser::characterData(&parser, "a b\n", 4);
+  ChapterHtmlSlimParser::startElement(&parser, "ruby", nullptr);
+  ChapterHtmlSlimParser::characterData(&parser, "\xE6\xBC\xA2\xE5\xAD\x97", 6);  // 漢字
+  ChapterHtmlSlimParser::startElement(&parser, "rt", nullptr);
+  ChapterHtmlSlimParser::characterData(&parser, "\xE3\x81\x8B\xE3\x82\x93\xE3\x81\x98", 9);  // かんじ
+  ChapterHtmlSlimParser::endElement(&parser, "rt");
+  ChapterHtmlSlimParser::endElement(&parser, "ruby");
+  ChapterHtmlSlimParser::characterData(&parser,
+                                       "\xE3\x80\x80"
+                                       "c",
+                                       4);  // ideographic space, c
+  ChapterHtmlSlimParser::endElement(&parser, "p");
+
+  EXPECT_EQ(parser.getVisibleTextChars(), 11u);
+  EXPECT_EQ(parser.getReadableTextChars(), 5u);  // a, b, 漢, 字, c
 }
 
 TEST_F(ChapterHtmlSlimParserTest, PassesIndentSettingsToNewTextBlock) {
@@ -1853,3 +1856,20 @@ TEST_F(ChapterWidowOrphanTest, LinkAboveTheCarryStaysOnItsPage) {
 }
 
 }  // namespace
+
+TEST(TextSpacingLayout, UsesShapingMemoOnlyForParagraphsWithIndicText) {
+  GfxRenderer renderer;
+  for (const char* word : {"office", "שָׁלוֹם", "कि", "漢कि"}) {
+    ParsedText text;
+    text.addWord(word, EpdFontFamily::REGULAR);
+    const unsigned before = GfxRenderer::shapingMemoStarts;
+    unsigned lines = 0;
+    text.layoutAndExtractLines(renderer, 0, 200, [&](std::unique_ptr<TextBlock> block, auto) {
+      EXPECT_TRUE(block->valid());
+      ++lines;
+    });
+    EXPECT_GT(lines, 0u);
+    const bool indic = std::strstr(word, "कि") != nullptr;
+    EXPECT_EQ(GfxRenderer::shapingMemoStarts - before, indic ? 1u : 0u) << word;
+  }
+}
