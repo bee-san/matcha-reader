@@ -1,46 +1,35 @@
-# Light sleep with the frontlight on (idea, not done)
-
-## Today
+# Light sleep with the frontlight on
 
 On the X4 Pro the main loop light-sleeps between page turns (`canIdleLightSleep()` in
-`src/main.cpp`). It does not sleep while the frontlight is on. The light's LEDC PWM runs from
-the APB clock, and that clock stops in light sleep, so the light would go dark. When you read
-with the light on, the CPU stays awake at its idle clock the whole time.
+`src/main.cpp`). It keeps sleeping while the frontlight is on.
 
-## The SDK already has most of it
+## How the light survives light sleep
 
-`FREEINK_FRONTLIGHT_LS` (`freeink-sdk/libs/hardware/FrontlightManager/src/FrontlightManager.cpp`)
-runs the LEDC timer from RC_FAST (~17.5 MHz). RC_FAST keeps running in light sleep. The flag
-also marks the channels `LEDC_SLEEP_MODE_KEEP_ALIVE` and keeps RC_FAST powered only while the
-light is lit.
+The `x4pro` envs build with `-DFREEINK_FRONTLIGHT_LS=1`. The SDK then clocks the light's LEDC timer
+from RC_FAST (about 17.5 MHz), which keeps running in light sleep, and marks both channels
+`LEDC_SLEEP_MODE_KEEP_ALIVE` (`freeink-sdk/libs/hardware/FrontlightManager/src/FrontlightManager.cpp`).
+RC_FAST is kept on in sleep only while the light is lit.
 
-## Why it can't just be turned on
+LEDC needs `frequency × 2^bits <= source clock`. The board profile asks for 25 kHz at 10 bits
+(`{8, 25000, 10, true, 9}` in `BoardConfig.h`), which is 25.6 MHz. When the request does not fit,
+`attachChannel()` keeps the 10 bits and lowers the frequency to the highest RC_FAST can drive
+(the calibrated RC_FAST frequency / 1024, about 17 kHz). The boot log shows the frequency used:
+`attach: 25000 Hz does not fit RC_FAST at 10 bits, using ... Hz`.
 
-The X4 Pro profile drives the light at 25 kHz with 10-bit duty (`{8, 25000, 10, true, 9}` in
-`BoardConfig.h`). LEDC needs `freq × 2^bits <= source clock`: 25 kHz × 1024 = 25.6 MHz, more
-than RC_FAST gives. `ledc_timer_config()` fails, and the SDK leaves the light unconfigured.
-With only the flag set, the light would be dead.
+This change lives on the `matcha/frontlight-ls-fit` branch of `bee-san/freeink-sdk`, which the
+`freeink-sdk` submodule points at. Every SDK bump means rebasing it onto the new upstream commit.
 
-## Plan
+## Deep sleep
 
-1. Fork `Free-Ink/freeink-sdk` to `bee-san/freeink-sdk` and point the `freeink-sdk` submodule
-   at it. Better still, offer the patch upstream so the fork can be dropped later.
-2. In the `FREEINK_FRONTLIGHT_LS` `attachChannel()`, when the requested frequency does not fit
-   RC_FAST at the requested resolution, lower the frequency to the highest that fits (about
-   16 kHz at 10 bits) instead of failing. Keep 10 bits, so the dimmest night level is not
-   coarser.
-3. Add `-DFREEINK_FRONTLIGHT_LS=1` to the `x4pro` envs in `platformio.ini`.
-4. In `enterDeepSleep()`, call the SDK's `FrontlightManager::park()` (through a new
-   `HalFrontlight` method) before `startDeepSleep()`. With `KEEP_ALIVE` the pad's sleep
-   isolation is off, and the SDK added `park()` for X4 Pro deep-sleep leakage on GPIO8/9.
-   `begin()` already releases the pad hold on wake.
-5. Remove the `Frontlight.isOn()` check from `canIdleLightSleep()`.
+A KEEP_ALIVE pad is not isolated when the chip sleeps. Before deep sleep, `enterDeepSleep()` calls
+`Frontlight.prepareForDeepSleep()`: it turns the light off (which also releases RC_FAST), then drives
+GPIO8/9 to the off level and holds them. `FrontlightManager::begin()` releases the hold on the next
+boot.
 
-## Risks to check on the device
+## Check on the device
 
-- Whine: the boost driver may be audible at 16 kHz. Listen in a quiet room at low and high
-  brightness. If it whines, keep 25 kHz and use 9 bits instead (512 steps). The lowest level
-  then becomes about twice as bright.
-- Flicker or a brightness step on each sleep and wake.
-- The light really is off in deep sleep (no faint glow), and it comes back after waking.
-- Upstream merges: every SDK bump means rebasing the patch onto the fork.
+- No whine from the boost driver at about 17 kHz, at low and high brightness, in a quiet room. If it
+  whines, keep 25 kHz and use 9 bits instead (512 steps; the lowest level is then about twice as
+  bright).
+- No flicker or brightness step on each sleep and wake.
+- The light is fully off in deep sleep (no faint glow), and it comes back after waking.

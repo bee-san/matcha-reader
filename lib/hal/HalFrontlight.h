@@ -16,6 +16,8 @@ class HalFrontlight {
   void setBrightness(uint8_t percent);
   void setWarmth(uint8_t warmPercent);
   void setOn(bool on);
+  // Turns the light off and drives and holds its pins at the off level through deep sleep.
+  void prepareForDeepSleep();
 
   uint8_t brightness() const { return lastBrightness; }
   uint8_t warmth() const { return manager.colorTemperature(); }

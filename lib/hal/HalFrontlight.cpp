@@ -30,6 +30,13 @@ void HalFrontlight::setWarmth(const uint8_t warmPercent) {
   manager.setColorTemperature(warmPercent > 100 ? 100 : warmPercent);
 }
 
+void HalFrontlight::prepareForDeepSleep() {
+  if (!manager.present()) return;
+  // Off first: under FREEINK_FRONTLIGHT_LS this also releases the RC_FAST keep-alive.
+  manager.setBrightness(0);
+  manager.prepareForDeepSleep();
+}
+
 void HalFrontlight::setOn(const bool on) {
   if (on == lit) return;
   lit = on;

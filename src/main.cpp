@@ -608,6 +608,8 @@ void enterDeepSleep(bool fromTimeout = false) {
   const bool wakeOnHeldButton = false;
 #endif
 
+  // An LEDC light configured to keep running through light sleep is not stopped by deep sleep either.
+  Frontlight.prepareForDeepSleep();
   halTiltSensor.deepSleep();
   display.deepSleep();
   Storage.prepareForDeepSleep();
@@ -1155,8 +1157,10 @@ static bool canIdleLightSleep() {
   if (powerManager.isLocked() || pageturner::holdsCpu.load()) return false;
   if (activityManager.renderPending() || activityManager.preventAutoSleep()) return false;
   if (WiFi.getMode() != WIFI_MODE_NULL) return false;
+#ifndef FREEINK_FRONTLIGHT_LS
   // The frontlight PWM clock stops in light sleep, which would blank the light.
   if (Frontlight.isOn()) return false;
+#endif
   // A pending power double-click is timed by this loop.
   if (mappedInputManager.powerClickPending()) return false;
   // Touch must be able to wake the chip; without its INT wake pin it has to be polled.
